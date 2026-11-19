@@ -54,7 +54,7 @@ There is also no hand-written C in leannginx or LeanTLS. nginx is well over 100,
 
 And it is used like nginx: it reads the same configuration files, so the two can be compared directly.
 
-**Where it is not better than nginx:** it is considerably slower (HTTPS bulk transfer in particular, because the cipher runs in pure Lean), TLS is 1.3-only with one cipher suite, regex locations have no captures, and nobody has audited it. It is good for local development and demos. On the open internet, nginx is still the right choice for now. leannginx is not a replacement for nginx. It shows that the part of a web server that decides security questions can be proved correct, not just tested.
+**Where it is not better than nginx:** it is slower (see Performance below), TLS is 1.3-only with one cipher suite, regex locations have no captures, and nobody has audited it. It is good for local development and demos. On the open internet, nginx is still the right choice for now. leannginx is not a replacement for nginx. It shows that the part of a web server that decides security questions can be proved correct, not just tested.
 
 ## What is proven
 
@@ -97,6 +97,27 @@ It reads `nginx.conf` with `include`, `server`, `listen` (with `ssl`), `server_n
 ```
 
 The pure program parses, routes, matches regexes and builds responses. The IO shell, `Main.lean`, only moves bytes: sockets, TLS, file reads, the clock and logs. Not counted: LeanTLS and lean-zip.
+
+## Performance
+
+Measured against nginx 1.31.9 on the same 14-core laptop, with the same files and configuration (requests per second unless noted):
+
+| Scenario | leannginx | nginx, 1 worker | nginx, 14 workers |
+|---|---:|---:|---:|
+| `return 200` | 23,435 | 107,474 | 106,343 |
+| 628 B file | 17,494 | 38,150 | 42,171 |
+| 129 KB page | **9,674** | 5,219 | 11,387 |
+| 129 KB page with gzip | **12,256** | 5,291 | 31,386 |
+| HTTPS `return 200` | 7,836 | 88,366 | 73,589 |
+| HTTPS, one 50 MB file | 28.7 MB/s | 537 MB/s | 541 MB/s |
+
+nginx is 2 to 5 times faster on small requests: Lean's async library runs all socket I/O through a single event loop, while nginx runs one process per core. leannginx beats a single nginx worker on larger pages and on gzip, where lean-zip also produces 8% smaller output than zlib.
+
+Verification is what made one of the optimisations safe. LeanTLS's Poly1305 now runs a 26-bit-limb implementation that is about 50 times faster than the arbitrary-precision specification, and `Poly1305.macFast_eq` proves the two equal for every key and message. The compiler swaps in the fast version through `@[csimp]`, while every theorem keeps talking about the simple one. HTTPS bulk transfer went from 5.7 to 28.7 MB/s.
+
+```latex
+\forall\, k, m:\quad \mathrm{macFast}(k, m) = \mathrm{mac}(k, m)
+```
 
 ## What you still have to trust
 
