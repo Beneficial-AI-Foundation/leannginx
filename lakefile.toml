@@ -8,7 +8,7 @@ defaultTargets = ["LeanNginx"]
 [[require]]
 name = "leantls"
 git = "https://github.com/Beneficial-AI-Foundation/leantls"
-rev = "0191c69a9eef46f8b4bd2904cdbfa281b5b65053"
+rev = "4e8c4a3697157679c5924c07eca34a237cd62490"
 
 # Verified DEFLATE/gzip (gzip_decompressSingle_compress: decompress ∘ compress = id).
 # Pinned commit targets Lean 4.35, hence this package's toolchain.

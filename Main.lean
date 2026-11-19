@@ -2,6 +2,7 @@ import LeanNginx
 import LeanTLS.Server
 import Zip.Native.Gzip
 import Std.Async
+import Std.Data.HashMap
 /-!
 # lnginx — the IO shell
 
@@ -101,11 +102,37 @@ def loadConfig (pfx confFile : String) : IO (Config × List String) := do
 
 /-! ## Environment -/
 
+/-- A socket whose reads have a deadline, enforced by the watchdog (`sweeper`). -/
+structure Watch where
+  sock : TCP.Socket.Client
+  /-- Monotonic milliseconds by which the pending read must finish; 0 = no read pending. -/
+  deadline : IO.Ref Nat
+
+abbrev Registry := Std.Mutex (Std.HashMap Nat Watch)
+
+/-- A cached small file: its bytes and, once asked for, its gzip encoding at one level. -/
+structure CachedFile where
+  size : Nat
+  mtime : Int
+  data : ByteArray
+  gz : Option (Nat × ByteArray) := none
+
+/-- Small-file cache (like nginx's `open_file_cache`, plus compressed copies). -/
+structure FileCache where
+  files : Std.HashMap String CachedFile := {}
+  bytes : Nat := 0
+
 structure Env where
   cfg : Config
   log : Option (Std.Mutex IO.FS.Handle)
   /-- TLS identity of each server (by `Server.idx`), for servers with `listen … ssl`. -/
   idents : Array (Option LeanTLS.Server.Identity) := #[]
+  /-- Every open socket with its read deadline. -/
+  watches : Registry
+  nextId : IO.Ref Nat
+  /-- `(second, "Date" value)`, so the date is formatted once a second, not per response. -/
+  dateCache : IO.Ref (Int × Bytes)
+  fileCache : Std.Mutex FileCache
 
 def Env.http (e : Env) : HttpConf := e.cfg.http
 
@@ -146,23 +173,37 @@ def listDir (p : Bytes) : IO (List Entry) := do
 
 /-- Receive with a timeout: `none` = timed out, `some none` = peer closed.
 
-Built from two promises (the socket read and a libuv timer), whichever resolves first.
-`Selectable.one` would be simpler but costs ~4x throughput on Lean 4.35. After a timeout the
-caller closes the connection, so the abandoned read does no harm. -/
-def recvT (c : TCP.Socket.Client) (ms : Nat) : Async (Option (Option ByteArray)) := do
-  let recvP ← c.native.recv? 65536
-  let timer ← Std.Internal.UV.Timer.mk ms.toUInt64 false
-  let tickP ← timer.next
-  let out : IO.Promise (Option (Except IO.Error (Option ByteArray))) ← IO.Promise.new
-  BaseIO.chainTask recvP.result? fun r =>
-    out.resolve (some (r.getD (.error (IO.userError "receive dropped"))))
-  BaseIO.chainTask tickP.result? fun _ => out.resolve none
-  let r ← MonadAwait.await out.result!
-  timer.stop
+A read only records its deadline; one watchdog task per server (`sweeper`) checks all deadlines
+once a second and cancels overdue reads (`cancelRecv` resolves the read's promise to `none`).
+This costs one libuv operation per read instead of four (a timer per read, or `Selectable.one`,
+which on Lean 4.35 costs ~4x throughput). Timeouts are therefore accurate to about a second, as
+in nginx. After a timeout the caller closes the connection. -/
+def recvW (w : Watch) (ms : Nat) : Async (Option (Option ByteArray)) := do
+  w.deadline.set ((← IO.monoMsNow) + ms)
+  let p ← w.sock.native.recv? 65536
+  let r ← MonadAwait.await p.result?
+  w.deadline.set 0
   match r with
   | none => return none
   | some (.ok v) => return some v
   | some (.error e) => throw e
+
+/-- The watchdog: once a second, cancel every read that is past its deadline. -/
+partial def sweeper (reg : Registry) : Async Unit := do
+  Std.Async.sleep 1000
+  let now ← IO.monoMsNow
+  let ws ← reg.atomically do return (← get).toArray
+  for (_, w) in ws do
+    let d ← w.deadline.get
+    if d != 0 && now ≥ d then w.sock.native.cancelRecv
+  sweeper reg
+
+/-- Register a socket with the watchdog for the duration of `k`. -/
+def withWatch (env : Env) (c : TCP.Socket.Client) (k : Watch → Async α) : Async α := do
+  let id ← env.nextId.modifyGet fun n => (n, n + 1)
+  let w : Watch := { sock := c, deadline := ← IO.mkRef 0 }
+  env.watches.atomically (modify (·.insert id w))
+  try k w finally env.watches.atomically (modify (·.erase id))
 
 /-- A client connection: plain TCP or TLS. -/
 structure Link where
@@ -173,10 +214,10 @@ structure Link where
   /-- `http` or `https` -/
   scheme : Bytes
 
-def tcpLink (c : TCP.Socket.Client) : Link where
-  recv := recvT c
-  send := c.send
-  close := do try c.shutdown catch _ => pure ()
+def tcpLink (w : Watch) : Link where
+  recv := recvW w
+  send := w.sock.send
+  close := do try w.sock.shutdown catch _ => pure ()
   scheme := b!"http"
 
 def tlsLink (t : LeanTLS.Server.Conn) (c : TCP.Socket.Client) : Link where
@@ -230,8 +271,57 @@ structure Out where
   sent : Nat
   keep : Bool
 
+/-- The `Date` value for `now`, formatted at most once a second. -/
+def dateFor (env : Env) (now : Int) : BaseIO Bytes := do
+  let (t, d) ← env.dateCache.get
+  if t == now then return d
+  let d := httpDate now
+  env.dateCache.set (now, d)
+  return d
+
 def baseHeaders (env : Env) (now : Int) : List (Bytes × Bytes) :=
   [(b!"Server", serverName env.http.serverTokens), (b!"Date", httpDate now)]
+
+def cacheMaxFile : Nat := 1048576
+def cacheMaxBytes : Nat := 67108864
+
+/-- Bytes of a file the router just `stat`ed with this size and mtime. Small files that have not
+changed for 2 seconds are kept in memory, keyed by path and checked against size and mtime, so a
+modified file is never served from the cache. -/
+def readFileCached (env : Env) (path : String) (size : Nat) (mtime : Int) : IO ByteArray := do
+  if size > cacheMaxFile then return ← IO.FS.readBinFile path
+  let hit ← env.fileCache.atomically do
+    return (← get).files.get? path |>.filter fun e => e.size == size && e.mtime == mtime
+  if let some e := hit then return e.data
+  let data ← IO.FS.readBinFile path
+  if data.size == size && mtime + 2 ≤ (← nowSecs) then
+    env.fileCache.atomically do
+      let c ← get
+      let c := if c.bytes + size > cacheMaxBytes then {} else c
+      set { files := c.files.insert path { size, mtime, data }, bytes := c.bytes + size : FileCache }
+  return data
+
+/-- gzip of a file at `level`, cached next to the file's bytes when the file is cached. -/
+def gzipCached (env : Env) (path : String) (size : Nat) (mtime : Int) (level : Nat) : IO ByteArray := do
+  let hit ← env.fileCache.atomically do
+    return ((← get).files.get? path).bind fun e =>
+      if e.size == size && e.mtime == mtime then
+        e.gz.bind fun (l, z) => if l == level then some z else none
+      else none
+  if let some z := hit then return z
+  let data ← readFileCached env path size mtime
+  let z := Zip.Native.GzipEncode.compress data level.toUInt8
+  env.fileCache.atomically do
+    let c ← get
+    if let some e := c.files.get? path then
+      if e.size == size && e.mtime == mtime then
+        set { c with files := c.files.insert path { e with gz := some (level, z) },
+                     bytes := c.bytes + z.size : FileCache }
+  return z
+
+def baseHeadersIO (env : Env) : IO (List (Bytes × Bytes)) := do
+  let now ← nowSecs
+  return [(b!"Server", serverName env.http.serverTokens), (b!"Date", ← dateFor env now)]
 
 def connHeader (keep : Bool) : Bytes × Bytes :=
   (b!"Connection", if keep then b!"keep-alive" else b!"close")
@@ -242,7 +332,7 @@ def addHeaderCodes : List Nat := [200, 201, 204, 206, 301, 302, 303, 304, 307, 3
 def sendSimple (env : Env) (c : Link) (head : Bool) (keep : Bool) (code : Nat)
     (ctype : Bytes) (body : Bytes) (extra : List (Bytes × Bytes)) : Async Out := do
   let now ← nowSecs
-  let hs := baseHeaders env now ++ [(b!"Content-Type", ctype),
+  let hs := (← baseHeadersIO env) ++ [(b!"Content-Type", ctype),
     (b!"Content-Length", decDigits body.length)] ++ extra ++ [connHeader keep]
   sendB c (renderHead code hs ++ (if head then [] else body))
   return { status := code, sent := if head then 0 else body.length, keep }
@@ -253,7 +343,7 @@ def sendErrorPage (env : Env) (c : Link) (head keep : Bool) (code : Nat)
   let keep := keep && !([400, 408, 413, 414, 431, 500, 501, 505].contains code)
   if code == 204 || code == 304 then
     let now ← nowSecs
-    sendB c (renderHead code (baseHeaders env now ++ extra ++ [connHeader keep]))
+    sendB c (renderHead code ((← baseHeadersIO env) ++ extra ++ [connHeader keep]))
     return { status := code, sent := 0, keep }
   sendSimple env c head keep code b!"text/html" (errorPage code env.http.serverTokens) extra
 
@@ -317,7 +407,9 @@ def proxyRequest (env : Env) (c : Link) (req : Request) (body : ByteArray)
   let upSock? ← try (some <$> connectUpstream up) catch e => do
     eprintln s!"connect() to {up.host}:{up.port} failed ({e}) while connecting to upstream"
     pure none
-  let some us := tcpLink <$> upSock? | sendErrorPage env c head false 502
+  let some sock := upSock? | sendErrorPage env c head false 502
+  withWatch env sock fun uw => do
+  let us := tcpLink uw
   let hostHdr := ofStr up.host ++ (if up.port == 80 then [] else 58 :: decDigits up.port)
   let fwd := req.headers.filter fun (n, _) => !hopByHop.contains n
   let reqHead := req.method ++ [32] ++ uri ++ b!" HTTP/1.0" ++ crlf ++
@@ -333,7 +425,7 @@ def proxyRequest (env : Env) (c : Link) (req : Request) (body : ByteArray)
       | some (code, hs) =>
         let now ← nowSecs
         let hs := hs.filter fun (n, _) => !hiddenUpstream.contains (lowerB n)
-        sendB c (renderHead code (baseHeaders env now ++ hs ++ [connHeader false]))
+        sendB c (renderHead code ((← baseHeadersIO env) ++ hs ++ [connHeader false]))
         let n ← if head then pure 0 else do
           if rest.size > 0 then c.send rest
           relay us c rest.size
@@ -425,21 +517,27 @@ def handle (env : Env) (port : Nat) (peer : String) (c : Link) (req : Request)
       let now ← nowSecs
       -- gzip (lean-zip): whole files up to 16 MiB, 200 responses only
       if fr.status == 200 && errCode.isNone && gzipApplies eff req mime size && size ≤ 16777216 then
-        let data ← IO.FS.readBinFile pathS
-        let z := Zip.Native.GzipEncode.compress data (eff.gzipLevel.getD 1).toUInt8
+        let z ← gzipCached env pathS size mtime (eff.gzipLevel.getD 1)
         let hs := [(b!"Content-Type", mime), (b!"Last-Modified", httpDate mtime),
           (b!"ETag", weakEtag (etag size mtime)), (b!"Content-Encoding", b!"gzip"),
           (b!"Content-Length", decDigits z.size)] ++
           (if eff.gzipVary.getD false then [(b!"Vary", b!"Accept-Encoding")] else [])
-        sendB c (renderHead 200 (baseHeaders env now ++ hs ++ addH 200 ++ [connHeader keep]))
+        sendB c (renderHead 200 ((← baseHeadersIO env) ++ hs ++ addH 200 ++ [connHeader keep]))
         unless head do c.send z
         return { status := 200, sent := if head then 0 else z.size, keep }
-      sendB c (renderHead fr.status (baseHeaders env now ++ fr.headers ++ addH fr.status ++ [connHeader keep]))
+      let hdr := renderHead fr.status ((← baseHeadersIO env) ++ fr.headers ++ addH fr.status ++ [connHeader keep])
       match fr.body, head with
       | some (off, len), false =>
+        -- small whole files: header and body in one write (one event-loop operation)
+        if off == 0 && len == size && size ≤ 65536 then
+          let data ← readFileCached env pathS size mtime
+          if data.size == size then
+            c.send (bytesOf hdr ++ data)
+            return { status := fr.status, sent := size, keep }
+        sendB c hdr
         let n ← sendFileRange c pathS off len
         return { status := fr.status, sent := n, keep := keep && n == len }
-      | _, _ => return { status := fr.status, sent := 0, keep }
+      | _, _ => sendB c hdr; return { status := fr.status, sent := 0, keep }
     | .autoindex dir =>
       let es ← listDir dir
       return ← sendSimple env c head keep 200 b!"text/html" (autoindexPage np.uri es) (addH 200)
@@ -507,14 +605,15 @@ def plainOnTlsPage (tokens : Bool) : Bytes :=
   b!"<html>\r\n<head><title>400 The plain HTTP request was sent to HTTPS port</title></head>\r\n<body>\r\n<center><h1>400 Bad Request</h1></center>\r\n<center>The plain HTTP request was sent to HTTPS port</center>\r\n<hr><center>" ++
     serverName tokens ++ b!"</center>\r\n</body>\r\n</html>\r\n"
 
-def serveConn (env : Env) (port : Nat) (ssl : Bool) (c : TCP.Socket.Client) : Async Unit := do
+def serveConn (env : Env) (port : Nat) (ssl : Bool) (c : TCP.Socket.Client) : Async Unit :=
+  withWatch env c fun w => do
   let peer ← try (addrString <$> c.getPeerName) catch _ => pure "-"
-  let plain := tcpLink c
+  let plain := tcpLink w
   if !ssl then
     try connLoop env port peer plain .empty true
     catch _ => closeConn plain
     return
-  let tr : LeanTLS.Server.Transport := { recv := recvT c, send := c.send }
+  let tr : LeanTLS.Server.Transport := { recv := recvW w, send := c.send }
   try
     match ← LeanTLS.Server.accept tr (pickIdentity env port) 60000 with
     | .tls t => connLoop env port peer (tlsLink t c) .empty true
@@ -642,7 +741,8 @@ def main (args : List String) : IO UInt32 := do
       | .ok i => idents := idents.push (some i)
       | .error e => eprintln s!"[emerg] cannot load certificate \"{certF}\" / key \"{keyF}\": {e}"; return 1
     else idents := idents.push none
-  let env : Env := { cfg, log, idents }
+  let env : Env := { cfg, log, idents, watches := ← Std.Mutex.new {}, nextId := ← IO.mkRef 0,
+                     dateCache := ← IO.mkRef (0, []), fileCache := ← Std.Mutex.new {} }
   -- listeners: one socket per distinct address:port (TLS if any `listen` on it says `ssl`)
   let listens := cfg.http.servers.flatMap (·.listens)
   let uniq := listens.foldl (fun acc l =>
@@ -660,6 +760,7 @@ def main (args : List String) : IO UInt32 := do
     match bound.toList with
     | [] => pure ()
     | b :: bs =>
+      background (sweeper env.watches)
       for x in bs do background (acceptLoop env x)
       acceptLoop env b
   loops.block

@@ -189,15 +189,37 @@ scripts/smoke.sh      # end-to-end check of the built binary
 
 ## Performance
 
-On an Apple-silicon laptop (`hey`, keep-alive, 50 clients for HTTP, 20 for HTTPS):
+Against nginx 1.31.9 on the same 14-core Apple-silicon laptop: same files and configuration,
+access logs off, keep-alive, best of two alternating rounds (`hey`). Requests per second unless
+noted.
 
-| | |
-|---|---|
-| HTTP, small responses | about 16,700 requests/s, around 15 MB resident |
-| HTTPS, small responses | about 5,800 requests/s |
-| HTTP, one 20 MB file | about 3.4 GB/s |
-| HTTPS, one 20 MB file | about 5.6 MB/s (ChaCha20-Poly1305 in pure Lean is the bottleneck) |
-| gzip | 129 KB of HTML → 17.5 KB at level 1; 5 MB of text in about 0.2 s |
+| Scenario | leannginx | nginx, 1 worker | nginx, 14 workers |
+|---|---:|---:|---:|
+| `return 200` | 23,435 | 107,474 | 106,343 |
+| 628 B file | 17,494 | 38,150 | 42,171 |
+| 129 KB page | **9,674** | 5,219 | 11,387 |
+| 129 KB page with gzip | **12,256** | 5,291 | 31,386 |
+| gzip output for that page | **17,554 B** | 19,072 B | 19,072 B |
+| HTTPS `return 200` | 7,836 | 88,366 | 73,589 |
+| HTTPS, new connection per request | 1,398 | 6,699 | 7,504 |
+| HTTP, one 200 MB file | 3.7 GB/s | 10.4 GB/s | 10.2 GB/s |
+| HTTPS, one 50 MB file | 28.7 MB/s | 537 MB/s | 541 MB/s |
+
+Where the time goes, and what was done about it:
+
+- **One event loop.** Lean's `Std.Async` runs all socket I/O through one libuv loop, and its TCP
+  sockets cannot share a port between processes (no `SO_REUSEPORT`), so nginx's one-process-per-core
+  model is not available. Throughput is nearly flat from 1 to 14 threads. Each request therefore
+  keeps its loop operations to a minimum: reads have no timer of their own (a once-a-second
+  watchdog cancels overdue reads), small files go out in one write, and the `Date` header is
+  formatted once a second.
+- **Small-file cache.** Small files and their gzip encodings are kept in memory, keyed by path,
+  size and mtime from the `stat` the router does anyway, so a changed file is never served stale.
+- **Poly1305.** The MAC runs a 26-bit-limb implementation in LeanTLS that is about 50x faster than
+  the arbitrary-precision specification and is proved equal to it for every key and message
+  (`Poly1305.macFast_eq`, used through `@[csimp]`). HTTPS bulk transfer went from 5.7 to 28.7 MB/s.
+  ChaCha20 and the handshake arithmetic (X25519, P-256) are the next candidates for the same
+  treatment.
 
 ## Not done yet
 

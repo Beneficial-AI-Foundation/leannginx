@@ -24,8 +24,14 @@
   with paths built as `base ++ joinSegs segs` from safe segments, or `route_confined` breaks.
 - `parseRequest` is written as explicit matches (no `do`) so proofs can split every branch.
 
-- `Main.recvT` (read with timeout) races the native read promise against a libuv timer by hand.
-  Do not switch it to `Selectable.one`: on Lean 4.35 that costs ~4x throughput (measured).
+- Read timeouts: `Main.recvW` only records a deadline; the `sweeper` task cancels overdue reads
+  once a second (`cancelRecv`). Do not go back to a timer per read or to `Selectable.one`: all
+  socket I/O goes through one libuv loop, and every extra loop operation per request costs
+  throughput (Selectable: ~4x, timer per read: ~25%, measured).
+- Small files and their gzip encodings are cached in `Env.fileCache`, keyed by path and checked
+  against the size and mtime of the router's `stat`; files changed in the last 2 s are not cached.
+- Optimising LeanTLS crypto: keep the simple function as the spec, add a fast one, prove them
+  equal, and register the equality with `@[csimp]` (see `LeanTLS/Poly1305.lean`).
 - Replacing an installed binary: `rm` it first, then `cp`. Overwriting in place makes macOS kill
   the new binary (exit 137, stale code signature).
 
