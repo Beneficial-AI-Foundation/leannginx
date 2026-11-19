@@ -39,7 +39,20 @@ def selectServer (servers : List Server) (port : Nat) (host : Option Bytes) : Op
 def matchesLoc (l : Location) (uri : Bytes) : Bool :=
   match l.kind with
   | .exact => l.uri == uri
+  | .regex re => regexMatches re uri
   | _ => isPrefixB l.uri uri
+
+/-- `location /p` or `location ^~ /p`. -/
+def isPrefixLoc (l : Location) : Bool :=
+  match l.kind with
+  | .pre | .noRegex => true
+  | _ => false
+
+/-- A regex location whose regex matches `uri`. -/
+def regexHit (uri : Bytes) (l : Location) : Bool :=
+  match l.kind with
+  | .regex re => regexMatches re uri
+  | _ => false
 
 /-- The longest-`uri` location (the first one on ties). -/
 def longest : List Location → Option Location → Option Location
@@ -49,10 +62,16 @@ def longest : List Location → Option Location → Option Location
       | none => some l
       | some b => if b.uri.length < l.uri.length then some l else some b)
 
+/-- nginx's order: an exact `=` match; else the longest matching prefix, unless a regex
+location matches (first in configuration order), which wins over a plain prefix but not over
+a `^~` prefix. -/
 def selectLocation (locs : List Location) (uri : Bytes) : Option Location :=
   match locs.find? (fun l => l.kind == .exact && l.uri == uri) with
   | some l => some l
-  | none => longest (locs.filter fun l => l.kind != .exact && isPrefixB l.uri uri) none
+  | none =>
+    match longest (locs.filter fun l => isPrefixLoc l && isPrefixB l.uri uri) none with
+    | some p => if p.kind == .noRegex then some p else some ((locs.find? (regexHit uri)).getD p)
+    | none => locs.find? (regexHit uri)
 
 /-! ## Variables (`$uri`, `$host`, …) -/
 

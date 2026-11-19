@@ -8,4 +8,6 @@ import LeanNginx.Proofs.Basic
 import LeanNginx.Proofs.Route
 import LeanNginx.Proofs.Misc
 import LeanNginx.Spec
+import LeanNginx.Proofs.Regex
+import LeanNginx.Regex
 import LeanNginx.Audit

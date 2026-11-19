@@ -7,10 +7,16 @@ cd "$(dirname "$0")/.."
 BIN=${1:-.lake/build/bin/lnginx}
 PORT=18089
 UP=18090
+TLSPORT=18091
 TMP=$(mktemp -d)
 trap 'kill $SRV $UPS 2>/dev/null; rm -rf "$TMP"' EXIT
 mkdir -p "$TMP/up" && echo "from upstream" > "$TMP/up/u.txt"
 [ -f html/files/random.bin ] || head -c 300000 /dev/urandom > html/files/random.bin
+openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -keyout "$TMP/ec.key" \
+  -out "$TMP/ec.crt" -days 2 -subj /CN=localhost -addext "subjectAltName=DNS:localhost" 2>/dev/null
+openssl req -x509 -newkey rsa:2048 -nodes -keyout "$TMP/rsa.key" -out "$TMP/rsa.crt" -days 2 \
+  -subj /CN=rsa.test -addext "subjectAltName=DNS:rsa.test" 2>/dev/null
+python3 -c "print('<p>compress me</p>' * 2000)" > "$TMP/page.html"
 python3 -m http.server $UP --bind 127.0.0.1 --directory "$TMP/up" >/dev/null 2>&1 & UPS=$!
 cat > "$TMP/t.conf" <<CONF
 http {
@@ -26,10 +32,23 @@ http {
     location /api/ { proxy_pass http://127.0.0.1:$UP/; }
     location = /health { default_type text/plain; return 200 "ok\n"; }
     location = /gone { return 410; }
+    location ~* \.(gif|jpe?g)$ { return 200 "regex\n"; }
+    location ^~ /pics/ { return 200 "noregex\n"; }
+    location /gz/ { alias $TMP/; gzip on; gzip_types text/css; }
     location /old/ { return 301 /; }
     error_page 404 /404.html;
   }
   server { listen 127.0.0.1:$PORT; server_name *.vhost.test; return 200 "vhost \$host\n"; }
+  server {
+    listen 127.0.0.1:$TLSPORT ssl; server_name localhost; root $(pwd)/html;
+    ssl_certificate $TMP/ec.crt; ssl_certificate_key $TMP/ec.key;
+    location = /scheme { return 200 "\$scheme\n"; }
+  }
+  server {
+    listen 127.0.0.1:$TLSPORT ssl; server_name rsa.test;
+    ssl_certificate $TMP/rsa.crt; ssl_certificate_key $TMP/rsa.key;
+    return 200 "rsa\n";
+  }
 }
 CONF
 "$BIN" -t -c "$TMP/t.conf" 2>/dev/null || { echo "FAIL config test"; exit 1; }
@@ -78,5 +97,21 @@ check "pipelining"         2 "$(printf 'GET /health HTTP/1.1\r\nHost: a\r\n\r\nG
 check "keep-alive reuse"   "1 0 0" "$(curl -s -o /dev/null -o /dev/null -o /dev/null -w '%{num_connects} ' $B/ $B/health $B/files/hello.txt | sed 's/ $//')"
 check "header too large"   431 "$(python3 -c "print('GET / HTTP/1.1\r\nHost: a\r\nX: ' + 'a'*40000 + '\r\n\r\n', end='')" | nc -w 2 127.0.0.1 $PORT | head -1 | cut -d' ' -f2)"
 check "parallel x500"      "500" "$(seq 500 | xargs -P 50 -I{} curl -s -o /dev/null -w '%{http_code}\n' $B/files/random.bin | grep -c 200)"
+T="https://localhost:$TLSPORT"
+check "https file"         "hello from leannginx" "$(curl -s --cacert "$TMP/ec.crt" $T/files/hello.txt)"
+check "https scheme"       "https" "$(curl -s --cacert "$TMP/ec.crt" $T/scheme)"
+check "https SNI + RSA"    "rsa" "$(curl -s --cacert "$TMP/rsa.crt" --resolve rsa.test:$TLSPORT:127.0.0.1 https://rsa.test:$TLSPORT/)"
+check "https TLS 1.3"      "TLSv1.3" "$(echo | openssl s_client -connect 127.0.0.1:$TLSPORT -servername localhost 2>/dev/null | awk '/^ *Protocol *:/{print $NF; exit}')"
+check "https P-256 share"  0 "$(echo | openssl s_client -connect 127.0.0.1:$TLSPORT -servername localhost -groups P-256 >/dev/null 2>&1; echo $?)"
+check "https rejects 1.2"  1 "$(echo | openssl s_client -connect 127.0.0.1:$TLSPORT -tls1_2 2>&1 | grep -c 'alert protocol version')"
+check "https binary"       ok "$(curl -s --cacert "$TMP/ec.crt" $T/files/random.bin | cmp -s - html/files/random.bin && echo ok)"
+check "https keep-alive"   "1 0" "$(curl -s --cacert "$TMP/ec.crt" -o /dev/null -o /dev/null -w '%{num_connects} ' $T/ $T/files/data.json | sed 's/ $//')"
+check "plain HTTP on TLS"  400 "$(code http://127.0.0.1:$TLSPORT/)"
+check "gzip encoding"      gzip "$(curl -s -o /dev/null -D - -H 'Accept-Encoding: gzip' $B/gz/page.html | tr -d '\r' | awk -F': ' 'tolower($1)=="content-encoding"{print $2}')"
+check "gzip roundtrip"     ok "$(curl -s --compressed $B/gz/page.html | cmp -s - "$TMP/page.html" && echo ok)"
+check "gzip off by default" "" "$(curl -s -o /dev/null -D - -H 'Accept-Encoding: gzip' $B/files/hello.txt | grep -i content-encoding)"
+check "gzip not for ranges" "" "$(curl -s -o /dev/null -D - -r 0-5 -H 'Accept-Encoding: gzip' $B/gz/page.html | grep -i content-encoding)"
+check "regex location"     "regex" "$(curl -s $B/a/b/C.JPG)"
+check "^~ beats regex"     "noregex" "$(curl -s $B/pics/x.gif)"
 check "access log"         1 "$(grep -c '"GET /files/hello.txt HTTP/1.1" 200 21' "$TMP/access.log" | awk '{print ($1>0)}')"
 [ $fail = 0 ] && echo "all smoke checks passed" || { echo "some smoke checks FAILED"; exit 1; }

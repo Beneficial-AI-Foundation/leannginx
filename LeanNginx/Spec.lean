@@ -1,4 +1,6 @@
 import LeanNginx.Proofs.Misc
+import LeanNginx.Proofs.Regex
+import Zip.Spec.GzipCorrect
 /-!
 # leannginx specification
 
@@ -182,6 +184,34 @@ theorem vector_uri : (normalizePath b!"/a//b/./c/").map NPath.uri = some b!"/a/b
 
 /-! ## 3. Location matching (nginx docs, `location`; nginx-tests: `http_location.t`) -/
 
+theorem regexHit_matches (uri : Bytes) (l : Location) (h : regexHit uri l = true) :
+    matchesLoc l uri = true := by
+  unfold regexHit at h; unfold matchesLoc
+  split at h <;> simp_all
+
+theorem regexHit_kind (uri : Bytes) (l : Location) (h : regexHit uri l = true) :
+    ∃ re, l.kind = .regex re ∧ regexMatches re uri = true := by
+  unfold regexHit at h
+  split at h
+  · rename_i re hk; exact ⟨re, hk, h⟩
+  · cases h
+
+theorem prefixLoc_matches (uri : Bytes) (l : Location) (hp : isPrefixLoc l = true)
+    (hu : isPrefixB l.uri uri = true) : matchesLoc l uri = true := by
+  unfold isPrefixLoc at hp; unfold matchesLoc
+  split at hp <;> simp_all
+
+theorem mem_prefixFilter {locs : List Location} {uri : Bytes} {l : Location}
+    (h : l ∈ locs.filter fun l => isPrefixLoc l && isPrefixB l.uri uri) :
+    l ∈ locs ∧ isPrefixLoc l = true ∧ isPrefixB l.uri uri = true := by
+  simp only [List.mem_filter, Bool.and_eq_true] at h
+  exact ⟨h.1, h.2.1, h.2.2⟩
+
+/-- **The regex matcher is exact**: it accepts a URI iff the URI is in the regex's language
+(`Matches`, the textbook inductive semantics), for every regex and every URI. -/
+theorem regexMatches_iff (re : Re) (uri : Bytes) : regexMatches re uri = true ↔ Matches re uri :=
+  matchB_iff re uri
+
 /-- The selected location is one of the configured ones and matches the URI. -/
 theorem selectLocation_sound (locs : List Location) (uri : Bytes) (l : Location)
     (h : selectLocation locs uri = some l) : l ∈ locs ∧ matchesLoc l uri = true := by
@@ -189,19 +219,25 @@ theorem selectLocation_sound (locs : List Location) (uri : Bytes) (l : Location)
   split at h
   · rename_i l' hf
     cases h
-    have hm := List.mem_of_find?_eq_some hf
     have hp := List.find?_some hf
     simp only [Bool.and_eq_true, beq_iff_eq] at hp
-    refine ⟨hm, ?_⟩
-    simp [matchesLoc, hp.1, hp.2]
-  · rcases longest_mem _ none l h with hm | hm
-    · simp only [List.mem_filter, Bool.and_eq_true, bne_iff_ne, ne_eq] at hm
-      refine ⟨hm.1, ?_⟩
-      unfold matchesLoc
-      split
-      · rename_i hk; exact absurd hk hm.2.1
-      · exact hm.2.2
-    · cases hm
+    exact ⟨List.mem_of_find?_eq_some hf, by simp [matchesLoc, hp.1, hp.2]⟩
+  · split at h
+    · rename_i p hl
+      have hpm : p ∈ locs ∧ matchesLoc p uri = true := by
+        rcases longest_mem _ none p hl with hm | hm
+        · obtain ⟨h1, h2, h3⟩ := mem_prefixFilter hm
+          exact ⟨h1, prefixLoc_matches uri p h2 h3⟩
+        · cases hm
+      split at h
+      · cases h; exact hpm
+      · cases h
+        cases hf : locs.find? (regexHit uri) with
+        | none => simpa [hf] using hpm
+        | some r =>
+          simp only [hf, Option.getD_some]
+          exact ⟨List.mem_of_find?_eq_some hf, regexHit_matches uri r (List.find?_some hf)⟩
+    · exact ⟨List.mem_of_find?_eq_some h, regexHit_matches uri l (List.find?_some h)⟩
 
 /-- An exact (`=`) location that equals the URI always wins. -/
 theorem selectLocation_exact (locs : List Location) (uri : Bytes)
@@ -218,31 +254,129 @@ theorem selectLocation_exact (locs : List Location) (uri : Bytes)
     have := List.find?_eq_none.mp hf l hl
     simp [hk, hu] at this
 
-/-- Otherwise the longest matching prefix wins: no other prefix location that matches the
-URI is longer than the one selected. -/
+/-- When a prefix location is selected, no matching prefix location is longer. -/
 theorem selectLocation_longest (locs : List Location) (uri : Bytes) (l : Location)
-    (h : selectLocation locs uri = some l) (hk : l.kind ≠ .exact) :
-    ∀ l' ∈ locs, l'.kind ≠ .exact → isPrefixB l'.uri uri = true → l'.uri.length ≤ l.uri.length := by
+    (h : selectLocation locs uri = some l) (hk : isPrefixLoc l = true) :
+    ∀ l' ∈ locs, isPrefixLoc l' = true → isPrefixB l'.uri uri = true →
+      l'.uri.length ≤ l.uri.length := by
+  intro l' hl' hk' hp'
+  have hmem : l' ∈ locs.filter fun l => isPrefixLoc l && isPrefixB l.uri uri := by
+    simp [hl', hk', hp']
   unfold selectLocation at h
   split at h
-  · rename_i l' hf
+  · rename_i l0 hf
     cases h
     have hp := List.find?_some hf
     simp only [Bool.and_eq_true, beq_iff_eq] at hp
-    exact absurd hp.1 hk
-  · intro l' hl' hk' hp
-    exact (longest_max _ none l h).1 l' (by simp [hl', hk', hp])
+    simp [isPrefixLoc, hp.1] at hk
+  · split at h
+    · rename_i p hl
+      have hmax := (longest_max _ none p hl).1 l' hmem
+      split at h
+      · cases h; exact hmax
+      · cases h
+        cases hf : locs.find? (regexHit uri) with
+        | none => simpa [hf] using hmax
+        | some r =>
+          simp only [hf, Option.getD_some] at hk
+          obtain ⟨re, hre, _⟩ := regexHit_kind uri r (List.find?_some hf)
+          simp [isPrefixLoc, hre] at hk
+    · obtain ⟨re, hre, _⟩ := regexHit_kind uri l (List.find?_some h)
+      simp [isPrefixLoc, hre] at hk
 
-/-- The example from the nginx documentation of `location`. -/
+/-- A regex location is selected only as the **first** regex location (in configuration order)
+whose regex matches the URI. -/
+theorem selectLocation_regex (locs : List Location) (uri : Bytes) (l : Location) (re : Re)
+    (h : selectLocation locs uri = some l) (hk : l.kind = .regex re) :
+    locs.find? (regexHit uri) = some l := by
+  unfold selectLocation at h
+  split at h
+  · rename_i l0 hf
+    cases h
+    have hp := List.find?_some hf
+    simp only [Bool.and_eq_true, beq_iff_eq] at hp
+    rw [hp.1] at hk; cases hk
+  · split at h
+    · rename_i p hl
+      have hpk : isPrefixLoc p = true := by
+        rcases longest_mem _ none p hl with hm | hm
+        · exact (mem_prefixFilter hm).2.1
+        · cases hm
+      split at h
+      · cases h; simp [isPrefixLoc, hk] at hpk
+      · cases h
+        cases hf : locs.find? (regexHit uri) with
+        | none => simp only [hf, Option.getD_none] at hk; simp [isPrefixLoc, hk] at hpk
+        | some r => simp [hf]
+    · exact h
+
+/-- A plain prefix location is selected only when no regex location matches the URI. -/
+theorem selectLocation_prefix_no_regex (locs : List Location) (uri : Bytes) (l : Location)
+    (h : selectLocation locs uri = some l) (hk : l.kind = .pre) :
+    locs.find? (regexHit uri) = none := by
+  unfold selectLocation at h
+  split at h
+  · rename_i l0 hf
+    cases h
+    have hp := List.find?_some hf
+    simp only [Bool.and_eq_true, beq_iff_eq] at hp
+    rw [hp.1] at hk; cases hk
+  · split at h
+    · split at h
+      · rename_i hn; cases h; simp [hk] at hn
+      · cases h
+        cases hf : locs.find? (regexHit uri) with
+        | none => rfl
+        | some r =>
+          simp only [hf, Option.getD_some] at hk
+          obtain ⟨re, hre, _⟩ := regexHit_kind uri r (List.find?_some hf)
+          rw [hre] at hk; cases hk
+    · obtain ⟨re, hre, _⟩ := regexHit_kind uri l (List.find?_some h)
+      rw [hre] at hk; cases hk
+
+/-- The example from the nginx documentation of `location`:
+`= /` (A), `/` (B), `/documents/` (C), `^~ /images/` (D), `~* \.(gif|jpg|jpeg)$` (E). -/
+def docRe : Re :=
+  match compileRegex true b!"\\.(gif|jpg|jpeg)$" with
+  | .ok r => r
+  | .error _ => .none
+
 def docLocs : List Location :=
-  [{ kind := .exact, uri := b!"/" }, { kind := .pre, uri := b!"/" },
-   { kind := .pre, uri := b!"/documents/" }, { kind := .noRegex, uri := b!"/images/" }]
+  [{ kind := .exact, uri := b!"A" }, { kind := .pre, uri := b!"/" },
+   { kind := .pre, uri := b!"/documents/" }, { kind := .noRegex, uri := b!"/images/" },
+   { kind := .regex docRe, uri := b!"E" }]
+
+def docPick (uri : Bytes) : Option Bytes :=
+  (selectLocation ({ kind := .exact, uri := b!"/" } :: docLocs.drop 1) uri).map fun l =>
+    if l.kind == .exact then b!"A" else if l.uri == b!"/" then b!"B"
+    else if l.uri == b!"/documents/" then b!"C" else if l.uri == b!"/images/" then b!"D" else l.uri
 
 theorem vector_location_doc :
-    (selectLocation docLocs b!"/").map (·.kind) = some .exact ∧
-    (selectLocation docLocs b!"/index.html").map (·.uri) = some b!"/" ∧
-    (selectLocation docLocs b!"/documents/document.html").map (·.uri) = some b!"/documents/" ∧
-    (selectLocation docLocs b!"/images/1.gif").map (·.uri) = some b!"/images/" := by
+    docPick b!"/" = some b!"A" ∧
+    docPick b!"/index.html" = some b!"B" ∧
+    docPick b!"/documents/document.html" = some b!"C" ∧
+    docPick b!"/images/1.gif" = some b!"D" ∧
+    docPick b!"/documents/1.jpg" = some b!"E" ∧
+    docPick b!"/documents/1.JPG" = some b!"E" := by
+  decide +kernel
+
+/-- Regex syntax: anchors, classes, alternation, counted repetition, `\d`, case folding. -/
+theorem vector_regex :
+    (compileRegex false b!"^/api/v[0-9]+/").toOption.map (regexMatches · b!"/api/v12/x") = some true ∧
+    (compileRegex false b!"^/api/v[0-9]+/").toOption.map (regexMatches · b!"/x/api/v1/") = some false ∧
+    (compileRegex false b!"^/(foo|bar)\\d{2,3}$").toOption.map (regexMatches · b!"/bar123") = some true ∧
+    (compileRegex false b!"^/(foo|bar)\\d{2,3}$").toOption.map (regexMatches · b!"/bar1234") = some false ∧
+    (compileRegex false b!"\\.php$").toOption.map (regexMatches · b!"/index.PHP") = some false ∧
+    (compileRegex true b!"\\.php$").toOption.map (regexMatches · b!"/index.PHP") = some true ∧
+    (compileRegex false b!"[^/]+\\.css$").toOption.map (regexMatches · b!"/a/b.css") = some true := by
+  decide +kernel
+
+/-- Unsupported regex features are configuration errors, not silent mismatches. -/
+theorem vector_regex_errors :
+    (compileRegex false b!"a(b").toOption.isNone = true ∧
+    (compileRegex false b!"(\\w+)/\\1").toOption.isNone = true ∧
+    (compileRegex false b!"/(?!x)").toOption.isNone = true ∧
+    (compileRegex false b!"*a").toOption.isNone = true := by
   decide +kernel
 
 /-! ## 4. Serving files: confinement (nginx-tests: `http_alias.t`, `index.t`, `autoindex.t`) -/
@@ -384,6 +518,54 @@ theorem vector_etag : etag 612 1700000000 = b!"\"6553f100-264\"" := by decide +k
 /-- Status lines. -/
 theorem vector_status : statusLine 404 = b!"HTTP/1.1 404 Not Found\r\n" ∧
     statusLine 299 = b!"HTTP/1.1 299\r\n" := by decide +kernel
+
+/-! ## 5b. gzip (nginx-tests: `gzip.t`) -/
+
+/-- **Compression never corrupts data** (lean-zip's theorem, restated here so that our build
+checks it): decompressing what the server sends returns the file, for every file and level. -/
+theorem gzip_roundtrip (data : ByteArray) (level : UInt8) (maxOut : Nat) (h : data.size ≤ maxOut) :
+    Zip.Native.GzipDecode.decompressSingle (Zip.Native.GzipEncode.compress data level) maxOut =
+      .ok data :=
+  Zip.Native.gzip_decompressSingle_compress data level maxOut h
+
+/-- A response is only compressed for a client that accepts gzip, and never for a range
+request (so `Content-Range` always refers to the file's own bytes). -/
+theorem gzipApplies_requires (eff : Settings) (req : Request) (mime : Bytes) (size : Nat)
+    (h : gzipApplies eff req mime size = true) :
+    acceptsGzip req.headers = true ∧ header? req.headers b!"range" = none ∧
+      eff.gzip = some true := by
+  unfold gzipApplies at h
+  simp only [Bool.and_eq_true, Option.isNone_iff_eq_none] at h
+  obtain ⟨⟨⟨⟨hg, ha⟩, _⟩, _⟩, hr⟩ := h
+  refine ⟨ha, hr, ?_⟩
+  cases hgz : eff.gzip with
+  | none => simp [hgz] at hg
+  | some b => simp [hgz] at hg; simp [hg]
+
+/-- `Accept-Encoding` parsing: lists, parameters, `q=0` refusals, `*`. -/
+theorem vector_accept_encoding :
+    acceptsGzip [(b!"accept-encoding", b!"gzip, deflate, br")] = true ∧
+    acceptsGzip [(b!"accept-encoding", b!"br;q=1.0, GZIP;q=0.8")] = true ∧
+    acceptsGzip [(b!"accept-encoding", b!"br, gzip;q=0")] = false ∧
+    acceptsGzip [(b!"accept-encoding", b!"*")] = true ∧
+    acceptsGzip [(b!"accept-encoding", b!"identity")] = false ∧
+    acceptsGzip [] = false := by
+  decide +kernel
+
+/-- `text/html` is always compressible; other types only when listed; parameters are ignored. -/
+def gzEff : Settings := { gzip := some true, gzipTypes := some [b!"text/css"] }
+
+def gzReq : Request :=
+  { method := b!"GET", target := b!"/", path := b!"/", query := none, minor := 1,
+    headers := [(b!"accept-encoding", b!"gzip")], host := none, contentLength := 0 }
+
+theorem vector_gzip_types :
+    gzipApplies gzEff gzReq b!"text/html; charset=utf-8" 100 = true ∧
+    gzipApplies gzEff gzReq b!"text/css" 100 = true ∧
+    gzipApplies gzEff gzReq b!"image/png" 100 = false ∧
+    gzipApplies gzEff gzReq b!"text/html" 10 = false ∧
+    gzipApplies { gzEff with gzip := some false } gzReq b!"text/html" 100 = false := by
+  decide +kernel
 
 /-! ## 6. Virtual hosts and variables (nginx-tests: `http_server_name.t`, `http_variables.t`) -/
 

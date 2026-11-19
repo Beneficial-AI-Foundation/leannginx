@@ -1,11 +1,16 @@
 # leannginx — nginx-compatible web server in Lean 4, with specs
 
 ## Workflow
-- Lean 4.36.0, no Mathlib. Builds locally on macOS: `lake build` checks every proof and spec
-  (the default target is the `LeanNginx` library only — probe-lean loads default targets);
-  `lake build lnginx` builds the server binary.
-- `scripts/smoke.sh` is the end-to-end check of the binary (starts it on port 18089 with a
-  temporary config and a python upstream on 18090). Run it after touching `Main.lean`.
+- Lean 4.35.0 (pinned because lean-zip's commit builds with 4.35, not 4.36), no Mathlib. Builds
+  locally on macOS: `lake build` checks every proof and spec (the default target is the
+  `LeanNginx` library only — probe-lean loads default targets); `lake build lnginx` builds the
+  server binary.
+- Dependencies: LeanTLS (HTTPS; its server side lives in that repo: `LeanTLS/Server.lean`,
+  `ServerMessages.lean`, `Sign.lean`, specs in `LeanTLS/Spec/Server.lean`) and lean-zip (gzip).
+  Always `lake update --keep-toolchain`; plain `lake update` bumps to LeanTLS's 4.36 toolchain and
+  lean-zip stops building.
+- `scripts/smoke.sh` is the end-to-end check of the binary (ports 18089 HTTP, 18091 HTTPS with
+  throwaway openssl certificates, python upstream on 18090). Run it after touching `Main.lean`.
 - The default site is `conf/nginx.conf` + `html/`; `.lake/build/bin/lnginx` serves it on
   http://127.0.0.1:8080/.
 
@@ -29,4 +34,9 @@
   never `native_decide`. Write byte literals as `b!"text"`.
 - Supporting lemmas go in `LeanNginx/Proofs/`.
 - The VeriLib page source is `pages/leannginx.md` (`OWNER` is replaced by the account name when posting).
+- Regex: `Regex.lean` (derivative matcher); `Proofs/Regex.lean` proves `matchB_iff` against the
+  inductive `Matches`. New syntax must compile to the existing `Re` constructors, or extend `Re`
+  and the proof.
+- The audit allows lean-zip's `bv_decide` axioms only for `gzip_roundtrip` (`BV_DECIDE_OK` in
+  `scripts/gen_audit.py`).
 - `Except` gets `DecidableEq` via `deriving instance` at the top of `Spec.lean`.

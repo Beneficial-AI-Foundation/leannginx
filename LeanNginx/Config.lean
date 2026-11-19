@@ -1,4 +1,5 @@
 import LeanNginx.Http
+import LeanNginx.Regex
 /-!
 # nginx configuration files
 
@@ -118,6 +119,8 @@ inductive LocKind where
   | noRegex
   /-- `location /uri` -/
   | pre
+  /-- `location ~ regex` / `location ~* regex` (case-insensitivity is compiled into `re`) -/
+  | regex (re : Re)
   deriving Repr, DecidableEq, Inhabited
 
 structure Upstream where
@@ -136,6 +139,14 @@ structure Settings where
   errorPages : Option (List (Nat × Bytes)) := none
   defaultType : Option Bytes := none
   maxBody : Option Nat := none
+  sslCert : Option Bytes := none
+  sslKey : Option Bytes := none
+  gzip : Option Bool := none
+  /-- `gzip_types` (lower case); `text/html` is always included, `*` means every type. -/
+  gzipTypes : Option (List Bytes) := none
+  gzipMinLength : Option Nat := none
+  gzipLevel : Option Nat := none
+  gzipVary : Option Bool := none
   deriving Repr, Inhabited
 
 def Settings.merge (child parent : Settings) : Settings where
@@ -146,6 +157,13 @@ def Settings.merge (child parent : Settings) : Settings where
   errorPages := child.errorPages <|> parent.errorPages
   defaultType := child.defaultType <|> parent.defaultType
   maxBody := child.maxBody <|> parent.maxBody
+  sslCert := child.sslCert <|> parent.sslCert
+  sslKey := child.sslKey <|> parent.sslKey
+  gzip := child.gzip <|> parent.gzip
+  gzipTypes := child.gzipTypes <|> parent.gzipTypes
+  gzipMinLength := child.gzipMinLength <|> parent.gzipMinLength
+  gzipLevel := child.gzipLevel <|> parent.gzipLevel
+  gzipVary := child.gzipVary <|> parent.gzipVary
 
 structure Location where
   kind : LocKind
@@ -162,9 +180,13 @@ structure Listen where
   addr : Option String
   port : Nat
   default : Bool
+  /-- `listen … ssl`: TLS 1.3 on this socket. -/
+  ssl : Bool := false
   deriving Repr, Inhabited, DecidableEq
 
 structure Server where
+  /-- Position in the `http` block (identifies the server's TLS certificate). -/
+  idx : Nat := 0
   listens : List Listen := []
   names : List Bytes := []
   s : Settings := {}
@@ -220,9 +242,10 @@ def parseListen (args : List Bytes) : Except String Listen := do
   | [] => throw "invalid number of arguments in \"listen\" directive"
   | a :: opts =>
     for o in opts do
-      if o == b!"default_server" || o == b!"default" || o == b!"reuseport" then pure ()
-      else if o == b!"ssl" || o == b!"http2" || o == b!"quic" then
-        throw s!"\"{toStr o}\" in \"listen\" is not supported by leannginx (plain HTTP/1.1 only)"
+      if o == b!"default_server" || o == b!"default" || o == b!"reuseport" || o == b!"ssl" ||
+         o == b!"http2" then pure ()
+      else if o == b!"quic" then
+        throw "\"quic\" in \"listen\" is not supported by leannginx (HTTP/1.1 over TCP only)"
       else throw s!"invalid parameter \"{toStr o}\""
     let dflt := opts.contains b!"default_server" || opts.contains b!"default"
     let (addr, portB) :=
@@ -237,7 +260,7 @@ def parseListen (args : List Bytes) : Except String Listen := do
     let addr := match addr with
       | some h => if h == b!"*" then none else if h == b!"localhost" then some "127.0.0.1" else some (toStr h)
       | none => none
-    pure { addr, port, default := dflt }
+    pure { addr, port, default := dflt, ssl := opts.contains b!"ssl" }
 
 /-- `proxy_pass http://host[:port][/uri]` -/
 def parseUpstream (u : Bytes) : Except String Upstream := do
@@ -284,13 +307,16 @@ def silentDirectives : List Bytes :=
    b!"reset_timedout_connection", b!"open_file_cache", b!"client_header_timeout",
    b!"client_body_timeout", b!"send_timeout", b!"proxy_http_version", b!"proxy_buffering",
    b!"proxy_read_timeout", b!"proxy_connect_timeout", b!"proxy_send_timeout",
-   b!"server_name_in_redirect", b!"port_in_redirect", b!"absolute_redirect"]
+   b!"server_name_in_redirect", b!"port_in_redirect", b!"absolute_redirect",
+   b!"ssl_protocols", b!"ssl_ciphers", b!"ssl_prefer_server_ciphers", b!"ssl_session_cache",
+   b!"ssl_session_timeout", b!"ssl_session_tickets", b!"ssl_stapling", b!"ssl_stapling_verify",
+   b!"ssl_trusted_certificate", b!"ssl_dhparam", b!"ssl_ecdh_curve", b!"ssl_buffer_size",
+   b!"ssl_early_data", b!"http2"]
 
 /-- Accepted for compatibility but with no effect that a client could notice: warned about. -/
 def ignoredDirectives : List Bytes :=
-  [b!"log_format", b!"gzip", b!"gzip_vary", b!"gzip_proxied", b!"gzip_comp_level",
-   b!"gzip_types", b!"gzip_min_length", b!"gzip_http_version", b!"gzip_buffers",
-   b!"gzip_disable", b!"charset", b!"proxy_set_header", b!"proxy_redirect", b!"etag",
+  [b!"log_format", b!"gzip_proxied", b!"gzip_http_version", b!"gzip_buffers",
+   b!"gzip_disable", b!"gzip_static", b!"charset", b!"proxy_set_header", b!"proxy_redirect", b!"etag",
    b!"if_modified_since", b!"expires"]
 
 abbrev Elab := StateT (List String) (Except String)
@@ -335,6 +361,27 @@ def elabSetting (s : Settings) (d : Directive) : Elab (Option Settings) := do
     return some { s with errorPages := some pages }
   if n == b!"default_type" then
     needArgs d 1 1; noBlock d; return some { s with defaultType := d.args.head? }
+  if n == b!"ssl_certificate" then
+    needArgs d 1 1; noBlock d; return some { s with sslCert := d.args.head? }
+  if n == b!"ssl_certificate_key" then
+    needArgs d 1 1; noBlock d; return some { s with sslKey := d.args.head? }
+  if n == b!"gzip" then
+    noBlock d; let v ← liftM (onOff n d.args); return some { s with gzip := some v }
+  if n == b!"gzip_vary" then
+    noBlock d; let v ← liftM (onOff n d.args); return some { s with gzipVary := some v }
+  if n == b!"gzip_types" then
+    needArgs d 1 256; noBlock d; return some { s with gzipTypes := some (d.args.map lowerB) }
+  if n == b!"gzip_min_length" then
+    needArgs d 1 1; noBlock d
+    match parseSize d.args.head! with
+    | some v => return some { s with gzipMinLength := some v }
+    | none => throw "\"gzip_min_length\" directive invalid value"
+  if n == b!"gzip_comp_level" then
+    needArgs d 1 1; noBlock d
+    match parseNat? d.args.head! with
+    | some v => if 1 ≤ v && v ≤ 9 then return some { s with gzipLevel := some v }
+                else throw "\"gzip_comp_level\" must be between 1 and 9"
+    | none => throw "\"gzip_comp_level\" directive invalid value"
   if n == b!"client_max_body_size" then
     needArgs d 1 1; noBlock d
     match parseSize d.args.head! with
@@ -362,10 +409,14 @@ def elabLocation (d : Directive) : Elab Location := do
     | [m, u] =>
       if m == b!"=" then pure (LocKind.exact, u)
       else if m == b!"^~" then pure (LocKind.noRegex, u)
-      else if m == b!"~" || m == b!"~*" then throw "regex locations are not supported by leannginx"
+      else if m == b!"~" || m == b!"~*" then
+        match compileRegex (m == b!"~*") u with
+        | .ok re => pure (LocKind.regex re, u)
+        | .error e => throw s!"{e} in location \"{toStr u}\""
       else throw s!"invalid location modifier \"{toStr m}\""
     | _ => throw "invalid number of arguments in \"location\" directive"
-  unless uri.head? == some 47 do throw s!"location \"{toStr uri}\" must start with \"/\""
+  let isRegex := match kind with | .regex _ => true | _ => false
+  unless isRegex || uri.head? == some 47 do throw s!"location \"{toStr uri}\" must start with \"/\""
   let some body := d.block | throw "directive \"location\" has no opening \"{\""
   let mut l : Location := { kind, uri }
   for c in body do
@@ -382,6 +433,8 @@ def elabLocation (d : Directive) : Elab Location := do
       needArgs c 1 1; noBlock c; let u ← liftM (parseUpstream c.args.head!); l := { l with proxy := some u }
     else if n == b!"location" then throw "nested locations are not supported by leannginx"
     else unknown c "location"
+  if isRegex && l.alias.isSome then
+    throw "\"alias\" in a regex location needs captures, which leannginx does not support; use \"root\""
   if l.alias.isSome && l.s.root.isSome then throw "\"alias\" directive is duplicate, \"root\" directive was specified earlier"
   pure l
 
@@ -422,7 +475,7 @@ def elabHttp (d : Directive) : Elab HttpConf := do
     if ← elabIgnored c then continue
     let n := c.name
     if n == b!"server" then
-      let sv ← elabServer c; h := { h with servers := h.servers ++ [sv] }
+      let sv ← elabServer c; h := { h with servers := h.servers ++ [{ sv with idx := h.servers.length }] }
     else if n == b!"types" then
       let t ← elabTypes c; h := { h with types := t ++ h.types }
     else if n == b!"access_log" then

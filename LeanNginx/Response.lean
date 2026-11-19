@@ -218,6 +218,36 @@ def fileResponse (req : Request) (mime : Bytes) (size : Nat) (mtime : Int) : Fil
     { status := 304, headers := [(b!"Last-Modified", lm), (b!"ETag", tag)], body := none }
   else rangeResponse mime size tag lm (chosenRange req size tag lm)
 
+/-! ## gzip (the compressor itself is lean-zip's, with its roundtrip theorem) -/
+
+/-- Does `Accept-Encoding` list `gzip` (or `*`) without `q=0`? -/
+def acceptsGzip (hs : List (Bytes × Bytes)) : Bool :=
+  (headerVals hs b!"accept-encoding").any fun v =>
+    (splitOnByte 44 v).any fun item =>
+      let parts := (splitOnByte 59 item).map (fun p => lowerB (trimWS p))
+      match parts with
+      | coding :: params =>
+        (coding == b!"gzip" || coding == b!"*") &&
+          !params.any (fun p => p == b!"q=0" || p == b!"q=0.0" || p == b!"q=0.00" || p == b!"q=0.000")
+      | [] => false
+
+/-- The MIME type without parameters, lower case. -/
+def mimeBase (m : Bytes) : Bytes := lowerB (trimWS (splitFirst 59 m).1)
+
+/-- nginx's rule for compressing a response: `gzip on`, the client accepts gzip, the type is
+`text/html` or listed in `gzip_types` (or `gzip_types *`), the body is at least
+`gzip_min_length` bytes (default 20), and no byte range was asked for. -/
+def gzipApplies (eff : Settings) (req : Request) (mime : Bytes) (size : Nat) : Bool :=
+  let types := eff.gzipTypes.getD []
+  let m := mimeBase mime
+  eff.gzip.getD false && acceptsGzip req.headers &&
+    (m == b!"text/html" || types.contains m || types.contains b!"*") &&
+    size ≥ eff.gzipMinLength.getD 20 &&
+    (header? req.headers b!"range").isNone
+
+/-- Weak ETag for a compressed representation (as nginx does). -/
+def weakEtag (tag : Bytes) : Bytes := if isPrefixB b!"W/" tag then tag else b!"W/" ++ tag
+
 /-! ## Autoindex -/
 
 structure Entry where

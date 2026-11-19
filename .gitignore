@@ -2,3 +2,5 @@
 logs/
 *.olean
 html/files/random.bin
+conf/localhost.crt
+conf/localhost.key

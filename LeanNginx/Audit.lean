@@ -5,163 +5,204 @@ import LeanNginx.Spec
 
 One `#print axioms` per theorem in `LeanNginx/Spec.lean`, pinned with `#guard_msgs`: if a spec
 starts depending on `sorry`, `native_decide` (`Lean.ofReduceBool`) or any other new axiom, the
-output changes and `lake build` fails. Allowed: `propext`, `Classical.choice`, `Quot.sound`.
+output changes and `lake build` fails. Allowed: `propext`, `Classical.choice`, `Quot.sound`;
+`gzip_roundtrip` (lean-zip's theorem) additionally depends on lean-zip's `bv_decide` proofs,
+which trust Lean's compiled LRAT checker.
 -/
 
 open LeanNginx.Spec
 
 /-- info: 'LeanNginx.Spec.parseRequest_method_token' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in #print axioms parseRequest_method_token
+#guard_msgs (whitespace := lax) in #print axioms parseRequest_method_token
 
 /-- info: 'LeanNginx.Spec.parseRequest_minor' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in #print axioms parseRequest_minor
+#guard_msgs (whitespace := lax) in #print axioms parseRequest_minor
 
 /-- info: 'LeanNginx.Spec.parseRequest_fields' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in #print axioms parseRequest_fields
+#guard_msgs (whitespace := lax) in #print axioms parseRequest_fields
 
 /-- info: 'LeanNginx.Spec.parseRequest_values_no_crlf' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in #print axioms parseRequest_values_no_crlf
+#guard_msgs (whitespace := lax) in #print axioms parseRequest_values_no_crlf
 
 /-- info: 'LeanNginx.Spec.parseRequest_no_transfer_encoding' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in #print axioms parseRequest_no_transfer_encoding
+#guard_msgs (whitespace := lax) in #print axioms parseRequest_no_transfer_encoding
 
 /-- info: 'LeanNginx.Spec.parseRequest_content_length' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in #print axioms parseRequest_content_length
+#guard_msgs (whitespace := lax) in #print axioms parseRequest_content_length
 
 /-- info: 'LeanNginx.Spec.parseRequest_host_safe' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in #print axioms parseRequest_host_safe
+#guard_msgs (whitespace := lax) in #print axioms parseRequest_host_safe
 
 /-- info: 'LeanNginx.Spec.vector_get' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in #print axioms vector_get
+#guard_msgs (whitespace := lax) in #print axioms vector_get
 
 /-- info: 'LeanNginx.Spec.vector_no_host' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in #print axioms vector_no_host
+#guard_msgs (whitespace := lax) in #print axioms vector_no_host
 
 /-- info: 'LeanNginx.Spec.vector_http10' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in #print axioms vector_http10
+#guard_msgs (whitespace := lax) in #print axioms vector_http10
 
 /-- info: 'LeanNginx.Spec.vector_cl_te' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in #print axioms vector_cl_te
+#guard_msgs (whitespace := lax) in #print axioms vector_cl_te
 
 /-- info: 'LeanNginx.Spec.vector_cl_cl' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in #print axioms vector_cl_cl
+#guard_msgs (whitespace := lax) in #print axioms vector_cl_cl
 
 /-- info: 'LeanNginx.Spec.vector_space_colon' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in #print axioms vector_space_colon
+#guard_msgs (whitespace := lax) in #print axioms vector_space_colon
 
 /-- info: 'LeanNginx.Spec.vector_obs_fold' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in #print axioms vector_obs_fold
+#guard_msgs (whitespace := lax) in #print axioms vector_obs_fold
 
 /-- info: 'LeanNginx.Spec.vector_nul_value' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in #print axioms vector_nul_value
+#guard_msgs (whitespace := lax) in #print axioms vector_nul_value
 
 /-- info: 'LeanNginx.Spec.vector_versions' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in #print axioms vector_versions
+#guard_msgs (whitespace := lax) in #print axioms vector_versions
 
 /-- info: 'LeanNginx.Spec.vector_bad_host' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in #print axioms vector_bad_host
+#guard_msgs (whitespace := lax) in #print axioms vector_bad_host
 
 /-- info: 'LeanNginx.Spec.vector_absolute_form' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in #print axioms vector_absolute_form
+#guard_msgs (whitespace := lax) in #print axioms vector_absolute_form
 
 /-- info: 'LeanNginx.Spec.normalizePath_segments_safe' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in #print axioms normalizePath_segments_safe
+#guard_msgs (whitespace := lax) in #print axioms normalizePath_segments_safe
 
 /-- info: 'LeanNginx.Spec.percentDecode_encode' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in #print axioms percentDecode_encode
+#guard_msgs (whitespace := lax) in #print axioms percentDecode_encode
 
 /-- info: 'LeanNginx.Spec.percentEncode_safe' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in #print axioms percentEncode_safe
+#guard_msgs (whitespace := lax) in #print axioms percentEncode_safe
 
 /-- info: 'LeanNginx.Spec.vector_dots' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in #print axioms vector_dots
+#guard_msgs (whitespace := lax) in #print axioms vector_dots
 
 /-- info: 'LeanNginx.Spec.vector_dirs' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in #print axioms vector_dirs
+#guard_msgs (whitespace := lax) in #print axioms vector_dirs
 
 /-- info: 'LeanNginx.Spec.vector_traversal' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in #print axioms vector_traversal
+#guard_msgs (whitespace := lax) in #print axioms vector_traversal
 
 /-- info: 'LeanNginx.Spec.vector_bad_escapes' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in #print axioms vector_bad_escapes
+#guard_msgs (whitespace := lax) in #print axioms vector_bad_escapes
 
 /-- info: 'LeanNginx.Spec.vector_encoded_slash' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in #print axioms vector_encoded_slash
+#guard_msgs (whitespace := lax) in #print axioms vector_encoded_slash
 
 /-- info: 'LeanNginx.Spec.vector_uri' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in #print axioms vector_uri
+#guard_msgs (whitespace := lax) in #print axioms vector_uri
+
+/-- info: 'LeanNginx.Spec.regexHit_matches' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs (whitespace := lax) in #print axioms regexHit_matches
+
+/-- info: 'LeanNginx.Spec.regexHit_kind' depends on axioms: [propext] -/
+#guard_msgs (whitespace := lax) in #print axioms regexHit_kind
+
+/-- info: 'LeanNginx.Spec.prefixLoc_matches' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs (whitespace := lax) in #print axioms prefixLoc_matches
+
+/-- info: 'LeanNginx.Spec.mem_prefixFilter' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs (whitespace := lax) in #print axioms mem_prefixFilter
+
+/-- info: 'LeanNginx.Spec.regexMatches_iff' depends on axioms: [propext] -/
+#guard_msgs (whitespace := lax) in #print axioms regexMatches_iff
 
 /-- info: 'LeanNginx.Spec.selectLocation_sound' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in #print axioms selectLocation_sound
+#guard_msgs (whitespace := lax) in #print axioms selectLocation_sound
 
 /-- info: 'LeanNginx.Spec.selectLocation_exact' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in #print axioms selectLocation_exact
+#guard_msgs (whitespace := lax) in #print axioms selectLocation_exact
 
 /-- info: 'LeanNginx.Spec.selectLocation_longest' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in #print axioms selectLocation_longest
+#guard_msgs (whitespace := lax) in #print axioms selectLocation_longest
+
+/-- info: 'LeanNginx.Spec.selectLocation_regex' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs (whitespace := lax) in #print axioms selectLocation_regex
+
+/-- info: 'LeanNginx.Spec.selectLocation_prefix_no_regex' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs (whitespace := lax) in #print axioms selectLocation_prefix_no_regex
 
 /-- info: 'LeanNginx.Spec.vector_location_doc' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in #print axioms vector_location_doc
+#guard_msgs (whitespace := lax) in #print axioms vector_location_doc
+
+/-- info: 'LeanNginx.Spec.vector_regex' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs (whitespace := lax) in #print axioms vector_regex
+
+/-- info: 'LeanNginx.Spec.vector_regex_errors' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs (whitespace := lax) in #print axioms vector_regex_errors
 
 /-- info: 'LeanNginx.Spec.route_confined' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in #print axioms route_confined
+#guard_msgs (whitespace := lax) in #print axioms route_confined
 
 /-- info: 'LeanNginx.Spec.route_serves_under' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in #print axioms route_serves_under
+#guard_msgs (whitespace := lax) in #print axioms route_serves_under
 
 /-- info: 'LeanNginx.Spec.vector_routes' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in #print axioms vector_routes
+#guard_msgs (whitespace := lax) in #print axioms vector_routes
 
 /-- info: 'LeanNginx.Spec.vector_alias' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in #print axioms vector_alias
+#guard_msgs (whitespace := lax) in #print axioms vector_alias
 
 /-- info: 'LeanNginx.Spec.renderHead_values_safe' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in #print axioms renderHead_values_safe
+#guard_msgs (whitespace := lax) in #print axioms renderHead_values_safe
 
 /-- info: 'LeanNginx.Spec.renderHead_names_safe' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in #print axioms renderHead_names_safe
+#guard_msgs (whitespace := lax) in #print axioms renderHead_names_safe
 
 /-- info: 'LeanNginx.Spec.htmlEscape_no_markup' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in #print axioms htmlEscape_no_markup
+#guard_msgs (whitespace := lax) in #print axioms htmlEscape_no_markup
 
 /-- info: 'LeanNginx.Spec.resolveRange_in_file' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in #print axioms resolveRange_in_file
+#guard_msgs (whitespace := lax) in #print axioms resolveRange_in_file
 
 /-- info: 'LeanNginx.Spec.fileResponse_body_in_file' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in #print axioms fileResponse_body_in_file
+#guard_msgs (whitespace := lax) in #print axioms fileResponse_body_in_file
 
 /-- info: 'LeanNginx.Spec.vector_ranges' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in #print axioms vector_ranges
+#guard_msgs (whitespace := lax) in #print axioms vector_ranges
 
 /-- info: 'LeanNginx.Spec.vector_http_date' depends on axioms: [propext] -/
-#guard_msgs in #print axioms vector_http_date
+#guard_msgs (whitespace := lax) in #print axioms vector_http_date
 
 /-- info: 'LeanNginx.Spec.vector_etag' does not depend on any axioms -/
-#guard_msgs in #print axioms vector_etag
+#guard_msgs (whitespace := lax) in #print axioms vector_etag
 
 /-- info: 'LeanNginx.Spec.vector_status' does not depend on any axioms -/
-#guard_msgs in #print axioms vector_status
+#guard_msgs (whitespace := lax) in #print axioms vector_status
+
+/-- info: 'LeanNginx.Spec.gzip_roundtrip' depends on axioms: [propext, Classical.choice, Quot.sound, Binary.readUInt32LE_bytes._native.bv_decide.ax_1_5, ByteArray.uint32_le_roundtrip._native.bv_decide.ax_1_5, Zip.Native.BitWriter.writeRevCode_eq._native.bv_decide.ax_1_5, Zip.Native.Deflate.codeExtra_packCode._native.bv_decide.ax_1_11, Zip.Native.Deflate.codeIdx_packCode._native.bv_decide.ax_1_10, Zip.Native.Deflate.codeVal_packCode._native.bv_decide.ax_1_11, Zip.Native.Deflate.distField_lt._native.bv_decide.ax_1_5, Zip.Native.Deflate.lenField_lt._native.bv_decide.ax_1_5, Zip.Native.Deflate.packTok_literal_tag._native.bv_decide.ax_1_5, Zip.Native.Deflate.packTok_reference_tag._native.bv_decide.ax_1_5, Zip.Native.Deflate.splitTokenBytesP_lt._native.bv_decide.ax_1_6, Zip.Native.Deflate.splitTokenClassPU_toNat._native.bv_decide.ax_1_5, Zip.Native.Deflate.splitTokenClassP_lt._native.bv_decide.ax_1_5, Zip.Native.Deflate.unpackTok_packTok._native.bv_decide.ax_1_7, Zip.Native.HuffTree.unpackLen_packEntry._native.bv_decide.ax_1_7, Zip.Native.HuffTree.unpackSym_packEntry._native.bv_decide.ax_1_7, Zip.Spec.DeflateStoredCorrect.readBits_2_at_1._native.bv_decide.ax_1_8, Zip.Spec.DeflateStoredCorrect.uint16_le_roundtrip._native.bv_decide.ax_1_5, Zip.Spec.DeflateStoredCorrect.uint16_xor_complement._native.bv_decide.ax_1_5, Zip.Native.BitWriter.dropBytes_eight._native.bv_decide.ax_1_8✝, Zip.Native.Deflate.unpackTok_pack_reference._native.bv_decide.ax_1_10✝, Zip.Native.Deflate.unpackTok_pack_reference._native.bv_decide.ax_1_15✝, Zip.Native.Deflate.unpackTok_pack_reference._native.bv_decide.ax_1_5✝, Zip.Native.BitWriter.reverse16_testBit._native.bv_decide.ax_1_13✝, Zip.Native.BitWriter.reverse16_testBit._native.bv_decide.ax_1_18✝, Zip.Native.BitWriter.reverse16_testBit._native.bv_decide.ax_1_23✝, Zip.Native.BitWriter.reverse16_testBit._native.bv_decide.ax_1_28✝, Zip.Native.BitWriter.reverse16_testBit._native.bv_decide.ax_1_33✝, Zip.Native.BitWriter.reverse16_testBit._native.bv_decide.ax_1_38✝, Zip.Native.BitWriter.reverse16_testBit._native.bv_decide.ax_1_43✝, Zip.Native.BitWriter.reverse16_testBit._native.bv_decide.ax_1_48✝, Zip.Native.BitWriter.reverse16_testBit._native.bv_decide.ax_1_53✝, Zip.Native.BitWriter.reverse16_testBit._native.bv_decide.ax_1_58✝, Zip.Native.BitWriter.reverse16_testBit._native.bv_decide.ax_1_63✝, Zip.Native.BitWriter.reverse16_testBit._native.bv_decide.ax_1_68✝, Zip.Native.BitWriter.reverse16_testBit._native.bv_decide.ax_1_73✝, Zip.Native.BitWriter.reverse16_testBit._native.bv_decide.ax_1_78✝, Zip.Native.BitWriter.reverse16_testBit._native.bv_decide.ax_1_8✝, Zip.Native.BitWriter.reverse16_testBit._native.bv_decide.ax_1_83✝, Zip.Native.Deflate.directRefWord_fields._native.bv_decide.ax_1_10✝, Zip.Native.Deflate.directRefWord_fields._native.bv_decide.ax_1_15✝, Zip.Native.Deflate.directRefWord_fields._native.bv_decide.ax_1_5✝, Zip.Native.Deflate.flat_codeExtra_lt_256._native.bv_decide.ax_1_5✝, Zip.Native.Deflate.flat_packCodeEntry_code._native.bv_decide.ax_1_5✝, Zip.Native.Deflate.flat_packCodeEntry_len._native.bv_decide.ax_1_5✝, Zip.Native.Deflate.flat_ref_bits_reassoc._native.bv_decide.ax_1_5✝, Zip.Native.Deflate.writeRevCode_packCodeEntry_eq._native.bv_decide.ax_1_5✝, Zip.Native.Deflate.codeExtra_lt_256._native.bv_decide.ax_1_5✝, Zip.Native.Deflate.packCodeEntry_len._native.bv_decide.ax_1_5✝, Zip.Native.Deflate.packCodeEntry_write._native.bv_decide.ax_1_5✝, Zip.Native.Deflate.splitField15_add0._native.bv_decide.ax_1_5✝, Zip.Native.Deflate.splitField15_add15._native.bv_decide.ax_1_5✝, Zip.Native.Deflate.splitField15_add30._native.bv_decide.ax_1_5✝, Zip.Native.Deflate.splitField15_add45._native.bv_decide.ax_1_5✝, Zip.Native.Deflate.splitField15_toNat_lt._native.bv_decide.ax_1_5✝, Zip.Native.Deflate.splitField20_merge0._native.bv_decide.ax_1_5✝, Zip.Native.Deflate.splitField20_merge3._native.bv_decide.ax_1_5✝, Zip.Native.Deflate.splitField20_toNat_lt._native.bv_decide.ax_1_5✝, Zip.Native.Deflate.splitPackedClass_eq._native.bv_decide.ax_1_5✝, Zip.Native.Deflate.splitPackedClass_lt._native.bv_decide.ax_1_5✝, Zip.Native.Deflate.splitUnpack15_bump._native.bv_decide.ax_1_8✝, Zip.Native.Deflate.splitUnpack20_merge._native.bv_decide.ax_1_10✝, Zip.Native.Deflate.splitUnpack20_merge._native.bv_decide.ax_1_15✝, Zip.Native.Deflate.splitUnpack20_merge._native.bv_decide.ax_1_20✝, Zip.Native.Deflate.splitUnpack20_merge._native.bv_decide.ax_1_25✝, Zip.Native.Deflate.splitUnpack20_merge._native.bv_decide.ax_1_30✝, Zip.Native.Deflate.splitUnpack20_merge._native.bv_decide.ax_1_35✝, Zip.Native.Deflate.splitUnpack20_merge._native.bv_decide.ax_1_40✝, Zip.Native.Deflate.splitUnpack20_merge._native.bv_decide.ax_1_45✝, Zip.Native.Deflate.splitUnpack20_merge._native.bv_decide.ax_1_5✝, Zip.Native.Deflate.ByteArray.ugetUInt32LE_usetUInt32LE_same._native.bv_decide.ax_1_5, Zip.Native.Deflate.ByteArray.ugetUInt64LE_usetUInt64LE_same._native.bv_decide.ax_1_5, Zip.Native.Deflate.UInt32.recomb4LE_xor_eq_zero_iff._native.bv_decide.ax_1_5, Zip.Native.Deflate.UInt32.recomb4LE_xor_low24_eq_zero_iff._native.bv_decide.ax_1_5, Zip.Native.Deflate.UInt64.recomb8LE_ctz._native.bv_decide.ax_1_10, Zip.Native.Deflate.UInt64.recomb8LE_ctz._native.bv_decide.ax_1_15, Zip.Native.Deflate.UInt64.recomb8LE_ctz._native.bv_decide.ax_1_20, Zip.Native.Deflate.UInt64.recomb8LE_ctz._native.bv_decide.ax_1_25, Zip.Native.Deflate.UInt64.recomb8LE_ctz._native.bv_decide.ax_1_30, Zip.Native.Deflate.UInt64.recomb8LE_ctz._native.bv_decide.ax_1_35, Zip.Native.Deflate.UInt64.recomb8LE_ctz._native.bv_decide.ax_1_40, Zip.Native.Deflate.UInt64.recomb8LE_ctz._native.bv_decide.ax_1_45, Zip.Native.Deflate.UInt64.recomb8LE_ctz._native.bv_decide.ax_1_5, Zip.Native.Deflate.UInt64.recomb8LE_ctz._native.bv_decide.ax_1_50, Zip.Native.Deflate.UInt64.recomb8LE_ctz._native.bv_decide.ax_1_55, Zip.Native.Deflate.UInt64.recomb8LE_ctz._native.bv_decide.ax_1_60, Zip.Native.Deflate.UInt64.recomb8LE_ctz._native.bv_decide.ax_1_65, Zip.Native.Deflate.UInt64.recomb8LE_ctz._native.bv_decide.ax_1_70, Zip.Native.Deflate.UInt64.recomb8LE_ctz._native.bv_decide.ax_1_75, Zip.Native.Deflate.UInt64.recomb8LE_inj._native.bv_decide.ax_1_10, Zip.Native.Deflate.UInt64.recomb8LE_inj._native.bv_decide.ax_1_15, Zip.Native.Deflate.UInt64.recomb8LE_inj._native.bv_decide.ax_1_20, Zip.Native.Deflate.UInt64.recomb8LE_inj._native.bv_decide.ax_1_25, Zip.Native.Deflate.UInt64.recomb8LE_inj._native.bv_decide.ax_1_30, Zip.Native.Deflate.UInt64.recomb8LE_inj._native.bv_decide.ax_1_35, Zip.Native.Deflate.UInt64.recomb8LE_inj._native.bv_decide.ax_1_40, Zip.Native.Deflate.UInt64.recomb8LE_inj._native.bv_decide.ax_1_5] -/
+#guard_msgs (whitespace := lax) in #print axioms gzip_roundtrip
+
+/-- info: 'LeanNginx.Spec.gzipApplies_requires' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs (whitespace := lax) in #print axioms gzipApplies_requires
+
+/-- info: 'LeanNginx.Spec.vector_accept_encoding' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs (whitespace := lax) in #print axioms vector_accept_encoding
+
+/-- info: 'LeanNginx.Spec.vector_gzip_types' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs (whitespace := lax) in #print axioms vector_gzip_types
 
 /-- info: 'LeanNginx.Spec.selectServer_port' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in #print axioms selectServer_port
+#guard_msgs (whitespace := lax) in #print axioms selectServer_port
 
 /-- info: 'LeanNginx.Spec.vector_server_names' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in #print axioms vector_server_names
+#guard_msgs (whitespace := lax) in #print axioms vector_server_names
 
 /-- info: 'LeanNginx.Spec.vector_expand' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in #print axioms vector_expand
+#guard_msgs (whitespace := lax) in #print axioms vector_expand
 
 /-- info: 'LeanNginx.Spec.vector_lex' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in #print axioms vector_lex
+#guard_msgs (whitespace := lax) in #print axioms vector_lex
 
 /-- info: 'LeanNginx.Spec.vector_parse_shape' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in #print axioms vector_parse_shape
+#guard_msgs (whitespace := lax) in #print axioms vector_parse_shape
 
 /-- info: 'LeanNginx.Spec.vector_unterminated' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in #print axioms vector_unterminated
+#guard_msgs (whitespace := lax) in #print axioms vector_unterminated
 
 /-- info: 'LeanNginx.Spec.vector_listen' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in #print axioms vector_listen
+#guard_msgs (whitespace := lax) in #print axioms vector_listen
 
 /-- info: 'LeanNginx.Spec.vector_sizes' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in #print axioms vector_sizes
+#guard_msgs (whitespace := lax) in #print axioms vector_sizes

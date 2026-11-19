@@ -1,4 +1,6 @@
 import LeanNginx
+import LeanTLS.Server
+import Zip.Native.Gzip
 import Std.Async
 /-!
 # lnginx — the IO shell
@@ -8,7 +10,8 @@ pure, specified code in `LeanNginx/`: request parsing (`parseRequest`), path nor
 (`normalizePath`), location/server selection and file mapping (`route`), responses
 (`fileResponse`, `renderHead`, `errorPage`, `autoindexPage`). Not covered by specs: this file.
 
-Networking uses Lean's built-in `Std.Async` (libuv); there is no hand-written C.
+Networking uses Lean's built-in `Std.Async` (libuv); TLS 1.3 comes from LeanTLS
+(`LeanTLS.Server`). There is no hand-written C.
 -/
 open Std.Async Std.Net LeanNginx
 
@@ -101,6 +104,8 @@ def loadConfig (pfx confFile : String) : IO (Config × List String) := do
 structure Env where
   cfg : Config
   log : Option (Std.Mutex IO.FS.Handle)
+  /-- TLS identity of each server (by `Server.idx`), for servers with `listen … ssl`. -/
+  idents : Array (Option LeanTLS.Server.Identity) := #[]
 
 def Env.http (e : Env) : HttpConf := e.cfg.http
 
@@ -145,10 +150,31 @@ def recvT (c : TCP.Socket.Client) (ms : Nat) : Async (Option (Option ByteArray))
     .case (c.recvSelector 65536) (fun b => pure (some b)),
     .case (← Selector.sleep (Std.Time.Millisecond.Offset.ofNat ms)) (fun _ => pure none)]
 
-def sendB (c : TCP.Socket.Client) (b : Bytes) : Async Unit := c.send (bytesOf b)
+/-- A client connection: plain TCP or TLS. -/
+structure Link where
+  /-- `none` = timed out, `some none` = closed. -/
+  recv : Nat → Async (Option (Option ByteArray))
+  send : ByteArray → Async Unit
+  close : Async Unit
+  /-- `http` or `https` -/
+  scheme : Bytes
 
-def closeConn (c : TCP.Socket.Client) : Async Unit := do
-  try c.shutdown catch _ => pure ()
+def tcpLink (c : TCP.Socket.Client) : Link where
+  recv := recvT c
+  send := c.send
+  close := do try c.shutdown catch _ => pure ()
+  scheme := b!"http"
+
+def tlsLink (t : LeanTLS.Server.Conn) (c : TCP.Socket.Client) : Link where
+  recv := t.read
+  send := t.write
+  close := do t.close; try c.shutdown catch _ => pure ()
+  scheme := b!"https"
+
+def sendB (c : Link) (b : Bytes) : Async Unit := c.send (bytesOf b)
+
+def closeConn (c : Link) : Async Unit := do
+  try c.close catch _ => pure ()
 
 def maxHead : Nat := 32768
 
@@ -163,7 +189,7 @@ def dropLeadingNewlines (b : ByteArray) : ByteArray := Id.run do
   while i < b.size && (b.get! i == 10 || b.get! i == 13) do i := i + 1
   return if i == 0 then b else b.extract i b.size
 
-partial def readHead (c : TCP.Socket.Client) (buf : ByteArray) (ms : Nat) : Async HeadRes := do
+partial def readHead (c : Link) (buf : ByteArray) (ms : Nat) : Async HeadRes := do
   let buf := dropLeadingNewlines buf
   match findHeadEnd buf with
   | some (h, b) =>
@@ -171,15 +197,15 @@ partial def readHead (c : TCP.Socket.Client) (buf : ByteArray) (ms : Nat) : Asyn
     pure (.ok (buf.extract 0 h) (buf.extract b buf.size))
   | none =>
     if buf.size > maxHead then return .tooLarge
-    match ← recvT c ms with
+    match ← c.recv ms with
     | none => pure (if buf.size == 0 then .closed else .timeout)
     | some none => pure .closed
     | some (some d) => readHead c (buf ++ d) ms
 
-partial def readBody (c : TCP.Socket.Client) (buf : ByteArray) (n : Nat) (ms : Nat) :
+partial def readBody (c : Link) (buf : ByteArray) (n : Nat) (ms : Nat) :
     Async (Option ByteArray) := do
   if buf.size ≥ n then return some buf
-  match ← recvT c ms with
+  match ← c.recv ms with
   | some (some d) => readBody c (buf ++ d) n ms
   | _ => return none
 
@@ -199,7 +225,7 @@ def connHeader (keep : Bool) : Bytes × Bytes :=
 /-- `add_header` applies to these codes (nginx without `always`). -/
 def addHeaderCodes : List Nat := [200, 201, 204, 206, 301, 302, 303, 304, 307, 308]
 
-def sendSimple (env : Env) (c : TCP.Socket.Client) (head : Bool) (keep : Bool) (code : Nat)
+def sendSimple (env : Env) (c : Link) (head : Bool) (keep : Bool) (code : Nat)
     (ctype : Bytes) (body : Bytes) (extra : List (Bytes × Bytes)) : Async Out := do
   let now ← nowSecs
   let hs := baseHeaders env now ++ [(b!"Content-Type", ctype),
@@ -207,7 +233,7 @@ def sendSimple (env : Env) (c : TCP.Socket.Client) (head : Bool) (keep : Bool) (
   sendB c (renderHead code hs ++ (if head then [] else body))
   return { status := code, sent := if head then 0 else body.length, keep }
 
-def sendErrorPage (env : Env) (c : TCP.Socket.Client) (head keep : Bool) (code : Nat)
+def sendErrorPage (env : Env) (c : Link) (head keep : Bool) (code : Nat)
     (extra : List (Bytes × Bytes) := []) : Async Out := do
   -- Errors that leave the request stream in doubt close the connection, as nginx does.
   let keep := keep && !([400, 408, 413, 414, 431, 500, 501, 505].contains code)
@@ -218,7 +244,7 @@ def sendErrorPage (env : Env) (c : TCP.Socket.Client) (head keep : Bool) (code :
   sendSimple env c head keep code b!"text/html" (errorPage code env.http.serverTokens) extra
 
 /-- Send `len` bytes of a file starting at `off`. Returns the number of bytes sent. -/
-def sendFileRange (c : TCP.Socket.Client) (path : String) (off len : Nat) : Async Nat := do
+def sendFileRange (c : Link) (path : String) (off len : Nat) : Async Nat := do
   let h ← IO.FS.Handle.mk path .read
   let mut skipped := 0
   while skipped < off do
@@ -266,18 +292,18 @@ def parseUpstreamHead (head : Bytes) : Option (Nat × List (Bytes × Bytes)) := 
     | _ => none
   pure (code, hs)
 
-partial def relay (up c : TCP.Socket.Client) (acc : Nat) : Async Nat := do
-  match ← recvT up 60000 with
+partial def relay (up c : Link) (acc : Nat) : Async Nat := do
+  match ← up.recv 60000 with
   | some (some d) => c.send d; relay up c (acc + d.size)
   | _ => return acc
 
-def proxyRequest (env : Env) (c : TCP.Socket.Client) (req : Request) (body : ByteArray)
+def proxyRequest (env : Env) (c : Link) (req : Request) (body : ByteArray)
     (up : Upstream) (uri : Bytes) : Async Out := do
   let head := req.method == b!"HEAD"
   let upSock? ← try (some <$> connectUpstream up) catch e => do
     eprintln s!"connect() to {up.host}:{up.port} failed ({e}) while connecting to upstream"
     pure none
-  let some us := upSock? | sendErrorPage env c head false 502
+  let some us := tcpLink <$> upSock? | sendErrorPage env c head false 502
   let hostHdr := ofStr up.host ++ (if up.port == 80 then [] else 58 :: decDigits up.port)
   let fwd := req.headers.filter fun (n, _) => !hopByHop.contains n
   let reqHead := req.method ++ [32] ++ uri ++ b!" HTTP/1.0" ++ crlf ++
@@ -336,7 +362,7 @@ def accessLog (env : Env) (peer : String) (reqLine : Bytes) (req? : Option Reque
 
 /-- Serve one parsed request. Internal redirects (index, `try_files`, `error_page`) loop here,
 at most 10 times, like nginx. -/
-def handle (env : Env) (port : Nat) (peer : String) (c : TCP.Socket.Client) (req : Request)
+def handle (env : Env) (port : Nat) (peer : String) (c : Link) (req : Request)
     (body : ByteArray) : Async Out := do
   let head := req.method == b!"HEAD"
   let keep := req.keepAlive
@@ -352,7 +378,8 @@ def handle (env : Env) (port : Nat) (peer : String) (c : TCP.Socket.Client) (req
     let l := (selectLocation sv.locations np.uri).getD defaultLocation
     let eff := effective env.http sv l
     let vars : Vars := { uri := np.uri, requestUri := req.target, args := query.getD [],
-                         host, method, remoteAddr := ofStr peer, serverPort := decDigits port }
+                         host, method, remoteAddr := ofStr peer, serverPort := decDigits port,
+                         scheme := c.scheme }
     let addH (code : Nat) := if addHeaderCodes.contains code then eff.addHeaders.getD [] else []
     let a ← runStep (route env.http sv { req with method, query } vars np)
     match a with
@@ -382,6 +409,17 @@ def handle (env : Env) (port : Nat) (peer : String) (c : TCP.Socket.Client) (req
                          headers := [(b!"Content-Type", mime), (b!"Content-Length", decDigits size)] }
         | none => fileResponse req mime size mtime
       let now ← nowSecs
+      -- gzip (lean-zip): whole files up to 16 MiB, 200 responses only
+      if fr.status == 200 && errCode.isNone && gzipApplies eff req mime size && size ≤ 16777216 then
+        let data ← IO.FS.readBinFile pathS
+        let z := Zip.Native.GzipEncode.compress data (eff.gzipLevel.getD 1).toUInt8
+        let hs := [(b!"Content-Type", mime), (b!"Last-Modified", httpDate mtime),
+          (b!"ETag", weakEtag (etag size mtime)), (b!"Content-Encoding", b!"gzip"),
+          (b!"Content-Length", decDigits z.size)] ++
+          (if eff.gzipVary.getD false then [(b!"Vary", b!"Accept-Encoding")] else [])
+        sendB c (renderHead 200 (baseHeaders env now ++ hs ++ addH 200 ++ [connHeader keep]))
+        unless head do c.send z
+        return { status := 200, sent := if head then 0 else z.size, keep }
       sendB c (renderHead fr.status (baseHeaders env now ++ fr.headers ++ addH fr.status ++ [connHeader keep]))
       match fr.body, head with
       | some (off, len), false =>
@@ -392,8 +430,9 @@ def handle (env : Env) (port : Nat) (peer : String) (c : TCP.Socket.Client) (req
       let es ← listDir dir
       return ← sendSimple env c head keep 200 b!"text/html" (autoindexPage np.uri es) (addH 200)
     | .redirect code loc =>
+      let dfltPort := if c.scheme == b!"https" then 443 else 80
       let loc := if isAbs loc then
-          b!"http://" ++ host ++ (if port == 80 then [] else 58 :: decDigits port) ++ loc
+          c.scheme ++ b!"://" ++ host ++ (if port == dfltPort then [] else 58 :: decDigits port) ++ loc
         else loc
       return ← sendSimple env c head keep code b!"text/html" (errorPage code env.http.serverTokens)
         ([(b!"Location", loc)] ++ addH code)
@@ -406,7 +445,7 @@ def handle (env : Env) (port : Nat) (peer : String) (c : TCP.Socket.Client) (req
 
 def firstLine (h : ByteArray) : Bytes := (headLines (h.extract 0 (min h.size 8192)).toList).headD []
 
-partial def connLoop (env : Env) (port : Nat) (peer : String) (c : TCP.Socket.Client)
+partial def connLoop (env : Env) (port : Nat) (peer : String) (c : Link)
     (buf : ByteArray) (first : Bool) : Async Unit := do
   let ms := if first then 60000 else env.http.keepaliveTimeout * 1000
   match ← readHead c buf ms with
@@ -441,16 +480,43 @@ partial def connLoop (env : Env) (port : Nat) (peer : String) (c : TCP.Socket.Cl
         accessLog env peer reqLine (some req) o
         if o.keep then connLoop env port peer c rest false else closeConn c
 
-def serveConn (env : Env) (port : Nat) (c : TCP.Socket.Client) : Async Unit := do
+/-- The TLS identity for an SNI name on `port`: the matching server's, else the port's default. -/
+def pickIdentity (env : Env) (port : Nat) (sni : Option String) : Option LeanTLS.Server.Identity :=
+  let host := sni.map fun s => lowerB (ofStr s)
+  let ofServer (sv : Server) := (env.idents[sv.idx]?).join
+  match (selectServer env.http.servers port host).bind ofServer with
+  | some i => some i
+  | none => (serversOn env.http.servers port).findSome? ofServer
+
+/-- nginx's answer to plain HTTP on a TLS port. -/
+def plainOnTlsPage (tokens : Bool) : Bytes :=
+  b!"<html>\r\n<head><title>400 The plain HTTP request was sent to HTTPS port</title></head>\r\n<body>\r\n<center><h1>400 Bad Request</h1></center>\r\n<center>The plain HTTP request was sent to HTTPS port</center>\r\n<hr><center>" ++
+    serverName tokens ++ b!"</center>\r\n</body>\r\n</html>\r\n"
+
+def serveConn (env : Env) (port : Nat) (ssl : Bool) (c : TCP.Socket.Client) : Async Unit := do
   let peer ← try (addrString <$> c.getPeerName) catch _ => pure "-"
-  try connLoop env port peer c .empty true
-  catch _ => closeConn c
+  let plain := tcpLink c
+  if !ssl then
+    try connLoop env port peer plain .empty true
+    catch _ => closeConn plain
+    return
+  let tr : LeanTLS.Server.Transport := { recv := recvT c, send := c.send }
+  try
+    match ← LeanTLS.Server.accept tr (pickIdentity env port) 60000 with
+    | .tls t => connLoop env port peer (tlsLink t c) .empty true
+    | .plain _ =>
+      let o ← sendSimple env plain false false 400 b!"text/html" (plainOnTlsPage env.http.serverTokens) []
+      accessLog env peer [] none o
+      closeConn plain
+    | .failed _ => closeConn plain
+  catch _ => closeConn plain
 
 /-! ## Listeners and main -/
 
 structure Bound where
   sock : TCP.Socket.Server
   port : Nat
+  ssl : Bool
   label : String
 
 def bindListen (l : Listen) : IO Bound := do
@@ -467,11 +533,12 @@ def bindListen (l : Listen) : IO Bound := do
     s.listen 511
   catch e => throw (IO.userError s!"bind() to {addrS}:{l.port} failed ({e})")
   let shown := if addrS == "0.0.0.0" then "localhost" else if addrS.contains ':' then s!"[{addrS}]" else addrS
-  return { sock := s, port := l.port, label := s!"http://{shown}:{l.port}/" }
+  let scheme := if l.ssl then "https" else "http"
+  return { sock := s, port := l.port, ssl := l.ssl, label := s!"{scheme}://{shown}:{l.port}/" }
 
 partial def acceptLoop (env : Env) (b : Bound) : Async Unit := do
   let c ← try (some <$> b.sock.accept) catch e => do eprintln s!"accept() failed ({e})"; pure none
-  if let some c := c then background (serveConn env b.port c)
+  if let some c := c then background (serveConn env b.port b.ssl c)
   acceptLoop env b
 
 def usage : String :=
@@ -507,7 +574,7 @@ def main (args : List String) : IO UInt32 := do
   if args.contains "-v" || args.contains "-V" then
     IO.println s!"lnginx version: leannginx/{version} (Lean 4, compiled to C)"
     if args.contains "-V" then
-      IO.println "verified (lake build): request parsing, path normalisation, location matching,\n  file confinement under root/alias, header sanitising, byte ranges (see LeanNginx/Spec.lean)"
+      IO.println "verified (lake build): request parsing, path normalisation, location matching,\n  file confinement under root/alias, header sanitising, byte ranges (see LeanNginx/Spec.lean)\nTLS 1.3 server: LeanTLS (ChaCha20-Poly1305, X25519/P-256, ECDSA P-256 or RSA-PSS certificates)"
     return 0
   let opts ← match parseOpts args {} with
     | .ok (some o) => pure o
@@ -543,10 +610,31 @@ def main (args : List String) : IO UInt32 := do
       catch e =>
         eprintln s!"[warn] cannot open access log \"{path}\" ({e}), logging disabled"
         pure none
-  let env : Env := { cfg, log }
-  -- listeners: one socket per distinct address:port
+  -- TLS identities for servers with `listen … ssl` (paths relative to the configuration directory)
+  let confDir := ofStr (((confFile : System.FilePath).parent.getD ".").toString)
+  let mut idents : Array (Option LeanTLS.Server.Identity) := #[]
+  for sv in cfg.http.servers do
+    if sv.listens.any (·.ssl) then
+      let eff := sv.s.merge cfg.http.s
+      let (some certP, some keyP) := (eff.sslCert, eff.sslKey) | do
+        eprintln s!"[emerg] no \"ssl_certificate\"/\"ssl_certificate_key\" for a server with \"listen ... ssl\" in {confFile}"
+        return 1
+      let certF := toStr (resolveIn confDir certP)
+      let keyF := toStr (resolveIn confDir keyP)
+      let read (f : String) : IO (Option String) := try some <$> IO.FS.readFile f catch e => do
+        eprintln s!"[emerg] cannot load certificate \"{f}\": {e}"; pure none
+      let (some certPem, some keyPem) := (← read certF, ← read keyF) | return 1
+      match LeanTLS.Server.Identity.ofPem certPem keyPem with
+      | .ok i => idents := idents.push (some i)
+      | .error e => eprintln s!"[emerg] cannot load certificate \"{certF}\" / key \"{keyF}\": {e}"; return 1
+    else idents := idents.push none
+  let env : Env := { cfg, log, idents }
+  -- listeners: one socket per distinct address:port (TLS if any `listen` on it says `ssl`)
   let listens := cfg.http.servers.flatMap (·.listens)
-  let uniq := listens.foldl (fun acc l => if acc.any (fun x => x.addr == l.addr && x.port == l.port) then acc else acc ++ [l]) []
+  let uniq := listens.foldl (fun acc l =>
+    if acc.any (fun x => x.addr == l.addr && x.port == l.port) then
+      acc.map fun x => if x.addr == l.addr && x.port == l.port then { x with ssl := x.ssl || l.ssl } else x
+    else acc ++ [l]) []
   let mut bound := #[]
   for l in uniq do
     try bound := bound.push (← bindListen l)

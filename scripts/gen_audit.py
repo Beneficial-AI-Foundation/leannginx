@@ -1,13 +1,18 @@
 #!/usr/bin/env python3
-"""Regenerate LeanNginx/Audit.lean: one `#guard_msgs in #print axioms` per spec.
+"""Regenerate LeanNginx/Audit.lean: one `#guard_msgs (whitespace := lax) in #print axioms` per spec.
 
 Run from the project root after `lake build LeanNginx.Spec` (use ./audit.sh).
 Fails if any spec depends on an axiom other than propext, Classical.choice, Quot.sound
-(so no `sorry`, and no `native_decide`, which would add `Lean.ofReduceBool`).
+(so no `sorry`, and no `native_decide`, which would add `Lean.ofReduceBool`), except that the
+specs in BV_DECIDE_OK may also use lean-zip's `bv_decide` axioms.
 """
 import os, re, subprocess, sys, tempfile
 
 ALLOWED = {"propext", "Classical.choice", "Quot.sound"}
+# Specs that restate a dependency's theorem proved with `bv_decide`: those proofs trust Lean's
+# compiled LRAT checker (axioms named `…._native.bv_decide.ax_…`), like `native_decide` does.
+# Only these specs may use such axioms; anywhere else they fail the audit.
+BV_DECIDE_OK = {"gzip_roundtrip"}
 SPEC = "LeanNginx/Spec.lean"
 
 names = [m.group(1) for line in open(SPEC, encoding="utf-8")
@@ -32,10 +37,12 @@ for n in names:
         print(f"audit: no axiom report for {n}", file=sys.stderr); bad = True; continue
     _, text, axs = got[n]
     used = {a.strip() for a in axs.split(",") if a.strip()}
+    if n in BV_DECIDE_OK:
+        used = {a for a in used if "._native.bv_decide." not in a}
     if not used <= ALLOWED:
         print(f"audit: {n} uses forbidden axioms {sorted(used - ALLOWED)}", file=sys.stderr); bad = True
     text = re.sub(r"\s+", " ", text)
-    body.append(f"/-- info: 'LeanNginx.Spec.{n}' {text} -/\n#guard_msgs in #print axioms {n}\n")
+    body.append(f"/-- info: 'LeanNginx.Spec.{n}' {text} -/\n#guard_msgs (whitespace := lax) in #print axioms {n}\n")
 if bad:
     sys.exit(1)
 
@@ -47,7 +54,9 @@ with open("LeanNginx/Audit.lean", "w", encoding="utf-8") as o:
 
 One `#print axioms` per theorem in `LeanNginx/Spec.lean`, pinned with `#guard_msgs`: if a spec
 starts depending on `sorry`, `native_decide` (`Lean.ofReduceBool`) or any other new axiom, the
-output changes and `lake build` fails. Allowed: `propext`, `Classical.choice`, `Quot.sound`.
+output changes and `lake build` fails. Allowed: `propext`, `Classical.choice`, `Quot.sound`;
+`gzip_roundtrip` (lean-zip's theorem) additionally depends on lean-zip's `bv_decide` proofs,
+which trust Lean's compiled LRAT checker.
 -/
 
 open LeanNginx.Spec
