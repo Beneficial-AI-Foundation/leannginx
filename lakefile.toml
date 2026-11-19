@@ -4,9 +4,11 @@ version = "0.1.0"
 # Build the server binary with `lake build lnginx`.
 defaultTargets = ["LeanNginx"]
 
+# TLS 1.3 (client and server). Pinned commit; the server side was added for leannginx.
 [[require]]
 name = "leantls"
-path = "../leantls"
+git = "https://github.com/Beneficial-AI-Foundation/leantls"
+rev = "0191c69a9eef46f8b4bd2904cdbfa281b5b65053"
 
 # Verified DEFLATE/gzip (gzip_decompressSingle_compress: decompress ∘ compress = id).
 # Pinned commit targets Lean 4.35, hence this package's toolchain.
