@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Welcome to leannginx!</title>
+<style>
+html { color-scheme: light dark; }
+body { width: 40em; margin: 0 auto; font-family: Tahoma, Verdana, Arial, sans-serif; }
+code { background: rgba(127,127,127,.15); padding: 0 .3em; }
+</style>
+</head>
+<body>
+<h1>Welcome to leannginx!</h1>
+<p>If you see this page, the leannginx web server is successfully installed and working.
+It reads nginx configuration files and is written in Lean&nbsp;4, compiled to C.</p>
+
+<p>Its request parser, path normalisation, location matching and file mapping are proved
+correct by <code>lake build</code>: for every request, a file it serves lies under the
+configured <code>root</code> or <code>alias</code>. See <code>LeanNginx/Spec.lean</code>.</p>
+
+<p>Try <a href="/files/">/files/</a> (autoindex), <a href="/health">/health</a>
+(<code>return 200</code>) and <a href="/nope">a missing page</a> (<code>error_page 404</code>).</p>
+
+<p><em>Thank you for using leannginx.</em></p>
+</body>
+</html>

@@ -1,0 +1,241 @@
+import LeanNginx.Config
+/-!
+# Request routing (pure)
+
+Given the configuration and a parsed request, decide what to do: serve a file, list a
+directory, redirect, return a fixed response, proxy, or answer with an error. Routing needs to
+know which paths exist, so `route` returns a small program (`Step`) that asks `stat` questions;
+the IO layer answers them with real `stat` calls, and the specs quantify over *every* possible
+answer (`Step.run` with an arbitrary oracle).
+
+Locations are matched like nginx (exact `=` first, then the longest prefix), on the normalised
+URI. File paths are always `base ++ "/" ++ seg₁ ++ "/" ++ …` with `base` a configured `root` or
+`alias` and every segment `Safe`; the spec `route_confined` proves it, which rules out path
+traversal (including the classic `alias` off-by-slash bug) by construction.
+-/
+namespace LeanNginx
+
+/-! ## Server and location selection -/
+
+def isSuffixB (s b : Bytes) : Bool := s.reverse.isPrefixOf b.reverse
+
+/-- `example.com`, `*.example.com` (sub-domains only), `.example.com` (both). -/
+def nameMatches (pat host : Bytes) : Bool :=
+  if pat.take 2 == b!"*." then isSuffixB (pat.drop 1) host
+  else if pat.head? == some 46 then host == pat.drop 1 || isSuffixB pat host
+  else pat == host
+
+def serversOn (servers : List Server) (port : Nat) : List Server :=
+  servers.filter fun s => s.listens.any (·.port == port)
+
+/-- nginx order: exact name, then wildcard, then the `default_server`, then the first server. -/
+def selectServer (servers : List Server) (port : Nat) (host : Option Bytes) : Option Server :=
+  let cands := serversOn servers port
+  let byName := host.bind fun h =>
+    (cands.find? (·.names.contains h)) <|>
+    (cands.find? (·.names.any fun p => (p.head? == some 42 || p.head? == some 46) && nameMatches p h))
+  byName <|> cands.find? (·.listens.any fun l => l.port == port && l.default) <|> cands.head?
+
+def matchesLoc (l : Location) (uri : Bytes) : Bool :=
+  match l.kind with
+  | .exact => l.uri == uri
+  | _ => isPrefixB l.uri uri
+
+/-- The longest-`uri` location (the first one on ties). -/
+def longest : List Location → Option Location → Option Location
+  | [], best => best
+  | l :: ls, best =>
+    longest ls (match best with
+      | none => some l
+      | some b => if b.uri.length < l.uri.length then some l else some b)
+
+def selectLocation (locs : List Location) (uri : Bytes) : Option Location :=
+  match locs.find? (fun l => l.kind == .exact && l.uri == uri) with
+  | some l => some l
+  | none => longest (locs.filter fun l => l.kind != .exact && isPrefixB l.uri uri) none
+
+/-! ## Variables (`$uri`, `$host`, …) -/
+
+structure Vars where
+  uri : Bytes
+  requestUri : Bytes
+  args : Bytes
+  host : Bytes
+  method : Bytes
+  remoteAddr : Bytes
+  serverPort : Bytes
+  scheme : Bytes := b!"http"
+  deriving Repr, Inhabited
+
+def Vars.lookup (v : Vars) (name : Bytes) : Option Bytes :=
+  if name == b!"uri" || name == b!"document_uri" then some v.uri
+  else if name == b!"request_uri" then some v.requestUri
+  else if name == b!"args" || name == b!"query_string" then some v.args
+  else if name == b!"is_args" then some (if v.args.isEmpty then [] else b!"?")
+  else if name == b!"host" || name == b!"server_name" then some v.host
+  else if name == b!"request_method" then some v.method
+  else if name == b!"remote_addr" then some v.remoteAddr
+  else if name == b!"server_port" then some v.serverPort
+  else if name == b!"scheme" then some v.scheme
+  else none
+
+def isVarChar (c : UInt8) : Bool := isAlpha c || isDigit c || c == 95
+
+def takeVarName : Bytes → Bytes × Bytes
+  | c :: rest => if isVarChar c then let (a, b) := takeVarName rest; (c :: a, b) else ([], c :: rest)
+  | [] => ([], [])
+
+def expandAux (v : Vars) : Nat → Bytes → Bytes
+  | 0, b => b
+  | _, [] => []
+  | fuel + 1, 36 :: 123 :: rest =>
+    let (n, r) := takeVarName rest
+    match r, v.lookup n with
+    | 125 :: r', some val => val ++ expandAux v fuel r'
+    | _, _ => 36 :: 123 :: expandAux v fuel rest
+  | fuel + 1, 36 :: rest =>
+    let (n, r) := takeVarName rest
+    match v.lookup n with
+    | some val => if n.isEmpty then 36 :: expandAux v fuel rest else val ++ expandAux v fuel r
+    | none => 36 :: expandAux v fuel rest
+  | fuel + 1, c :: rest => c :: expandAux v fuel rest
+
+/-- Expand `$name` and `${name}`; unknown variables stay as written. -/
+def expand (v : Vars) (b : Bytes) : Bytes := expandAux v (b.length + 1) b
+
+/-! ## Actions and stat programs -/
+
+/-- What `stat` reports about a path. -/
+inductive Kind where
+  | file (size : Nat) (mtime : Int)
+  | dir
+  deriving Repr, DecidableEq, Inhabited
+
+inductive Action where
+  | file (path : Bytes) (size : Nat) (mtime : Int)
+  | autoindex (path : Bytes)
+  | redirect (code : Nat) (location : Bytes)
+  /-- `return code text` -/
+  | text (code : Nat) (body : Bytes)
+  | error (code : Nat)
+  /-- `return 444`: close the connection without answering -/
+  | close
+  /-- re-run routing with this URI (index files, `try_files` fallback, `error_page`) -/
+  | internal (uri : Bytes)
+  | proxy (up : Upstream) (uri : Bytes)
+  deriving Repr, Inhabited, DecidableEq
+
+inductive Step where
+  | done (a : Action)
+  | stat (path : Bytes) (k : Option Kind → Step)
+  deriving Inhabited
+
+/-- Run a stat program against an oracle. -/
+def Step.run (o : Bytes → Option Kind) : Step → Action
+  | .done a => a
+  | .stat p k => (k (o p)).run o
+
+/-! ## File-system mapping -/
+
+def joinSegs (segs : List Bytes) : Bytes := segs.flatMap (47 :: ·)
+
+def dropTrailingSlash (b : Bytes) : Bytes :=
+  if b.getLast? == some 47 && b.length > 1 then b.dropLast else b
+
+def defaultRoot : Bytes := b!"html"
+
+/-- Directory a location serves from and the safe segments below it. -/
+def fsTarget (l : Location) (eff : Settings) (np : NPath) : Option (Bytes × List Bytes) :=
+  match l.alias with
+  | some a => do
+    let rem := np.uri.drop l.uri.length
+    let segs ← normSegs (splitOnByte 47 rem) []
+    pure (dropTrailingSlash a, segs)
+  | none => some (dropTrailingSlash (eff.root.getD defaultRoot), np.segs)
+
+def redirectCodes : List Nat := [301, 302, 303, 307, 308]
+
+def retAction (v : Vars) : Nat × Option Bytes → Action
+  | (444, _) => .close
+  | (c, some t) => if redirectCodes.contains c then .redirect c (expand v t) else .text c (expand v t)
+  | (c, none) => .error c
+
+def withQuery (uri : Bytes) (q : Option Bytes) : Bytes :=
+  match q with
+  | some q => uri ++ [63] ++ q
+  | none => uri
+
+/-- Directory request: first existing index file (internal redirect), else autoindex/403/404. -/
+def serveDir (eff : Settings) (np : NPath) (base : Bytes) (segs : List Bytes) : List Bytes → Step
+  | idx :: rest =>
+    if segOk idx then
+      .stat (base ++ joinSegs (segs ++ [idx])) fun
+        | some (.file _ _) => .done (.internal (np.uri ++ idx))
+        | _ => serveDir eff np base segs rest
+    else serveDir eff np base segs rest
+  | [] =>
+    .stat (base ++ joinSegs segs) fun
+      | some .dir => .done (if eff.autoindex.getD false then .autoindex (base ++ joinSegs segs) else .error 403)
+      | _ => .done (.error 404)
+
+def serveStatic (l : Location) (eff : Settings) (np : NPath) (query : Option Bytes) : Step :=
+  match fsTarget l eff np with
+  | none => .done (.error 404)
+  | some (base, segs) =>
+    if np.dir then serveDir eff np base segs (eff.index.getD [b!"index.html"])
+    else
+      .stat (base ++ joinSegs segs) fun
+        | some (.file size mtime) => .done (.file (base ++ joinSegs segs) size mtime)
+        | some .dir => .done (.redirect 301 (withQuery (percentEncode (np.uri ++ [47])) query))
+        | none => .done (.error 404)
+
+/-- `try_files a b … last`: the first of `a b …` that exists, else `last` (`=code` or a URI). -/
+def tryFiles (l : Location) (eff : Settings) (v : Vars) (query : Option Bytes) : List Bytes → Step
+  | [] => .done (.error 404)
+  | [last] =>
+    let e := expand v last
+    if e.head? == some 61 then .done (.error ((parseNat? (e.drop 1)).getD 404))
+    else .done (.internal e)
+  | item :: rest =>
+    let e := expand v item
+    match normalizePath e with
+    | none => tryFiles l eff v query rest
+    | some np =>
+      match fsTarget l eff np with
+      | none => tryFiles l eff v query rest
+      | some (base, segs) =>
+        .stat (base ++ joinSegs segs) fun
+          | some (.file size mtime) =>
+            if np.dir then tryFiles l eff v query rest else .done (.file (base ++ joinSegs segs) size mtime)
+          | some .dir =>
+            if np.dir then serveDir eff np base segs (eff.index.getD [b!"index.html"])
+            else tryFiles l eff v query rest
+          | none => tryFiles l eff v query rest
+
+/-- The implicit location used when no `location` matches. -/
+def defaultLocation : Location := { kind := .pre, uri := b!"/" }
+
+def effective (h : HttpConf) (sv : Server) (l : Location) : Settings :=
+  l.s.merge (sv.s.merge h.s)
+
+/-- Route a request whose path normalised to `np`. -/
+def route (h : HttpConf) (sv : Server) (req : Request) (v : Vars) (np : NPath) : Step :=
+  match sv.ret with
+  | some r => .done (retAction v r)
+  | none =>
+    let l := (selectLocation sv.locations np.uri).getD defaultLocation
+    let eff := effective h sv l
+    match l.ret, l.proxy with
+    | some r, _ => .done (retAction v r)
+    | none, some up =>
+      let uri := match up.uri with
+        | some u => percentEncode (u ++ np.uri.drop l.uri.length)
+        | none => req.path
+      .done (.proxy up (withQuery uri req.query))
+    | none, none =>
+      if !(req.method == b!"GET" || req.method == b!"HEAD") then .done (.error 405)
+      else match l.tryFiles with
+        | some items => tryFiles l eff v req.query items
+        | none => serveStatic l eff np req.query
+
+end LeanNginx

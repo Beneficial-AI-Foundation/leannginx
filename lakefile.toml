@@ -1,0 +1,14 @@
+name = "leannginx"
+version = "0.1.0"
+# The library only: VeriLib's probe-lean loads the default targets into one environment.
+# Build the server binary with `lake build lnginx`.
+defaultTargets = ["LeanNginx"]
+
+[[lean_lib]]
+name = "LeanNginx"
+globs = ["LeanNginx", "LeanNginx.+"]
+
+# The web server: lnginx [-p PREFIX] [-c CONF] [-t] [-v]
+[[lean_exe]]
+name = "lnginx"
+root = "Main"
