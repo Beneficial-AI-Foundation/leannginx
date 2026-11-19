@@ -28,4 +28,5 @@
 - State specs for all inputs where possible. Concrete vectors: `decide +kernel` (or `rfl`);
   never `native_decide`. Write byte literals as `b!"text"`.
 - Supporting lemmas go in `LeanNginx/Proofs/`.
+- The VeriLib page source is `pages/leannginx.md` (`OWNER` is replaced by the account name when posting).
 - `Except` gets `DecidableEq` via `deriving instance` at the top of `Spec.lean`.
