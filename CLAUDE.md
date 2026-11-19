@@ -24,6 +24,11 @@
   with paths built as `base ++ joinSegs segs` from safe segments, or `route_confined` breaks.
 - `parseRequest` is written as explicit matches (no `do`) so proofs can split every branch.
 
+- `Main.recvT` (read with timeout) races the native read promise against a libuv timer by hand.
+  Do not switch it to `Selectable.one`: on Lean 4.35 that costs ~4x throughput (measured).
+- Replacing an installed binary: `rm` it first, then `cp`. Overwriting in place makes macOS kill
+  the new binary (exit 137, stale code signature).
+
 ## Specs, not tests
 - No runtime unit tests. `LeanNginx/Spec.lean` is the test suite; sections name the nginx
   feature and the nginx-tests script it corresponds to.

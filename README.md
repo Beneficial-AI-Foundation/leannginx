@@ -189,12 +189,15 @@ scripts/smoke.sh      # end-to-end check of the built binary
 
 ## Performance
 
-On an Apple-silicon laptop:
+On an Apple-silicon laptop (`hey`, keep-alive, 50 clients for HTTP, 20 for HTTPS):
 
-- HTTP: about 9,700 requests/s with keep-alive (`hey -n 20000 -c 50`), around 15 MB resident.
-- HTTPS: about 2,900 requests/s with keep-alive (Go client). Bulk transfer is slow, a few MB/s,
-  because ChaCha20-Poly1305 runs in pure Lean.
-- gzip: 5 MB of text compresses in about 0.2 s at level 1.
+| | |
+|---|---|
+| HTTP, small responses | about 16,700 requests/s, around 15 MB resident |
+| HTTPS, small responses | about 5,800 requests/s |
+| HTTP, one 20 MB file | about 3.4 GB/s |
+| HTTPS, one 20 MB file | about 5.6 MB/s (ChaCha20-Poly1305 in pure Lean is the bottleneck) |
+| gzip | 129 KB of HTML → 17.5 KB at level 1; 5 MB of text in about 0.2 s |
 
 ## Not done yet
 

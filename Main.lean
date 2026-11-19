@@ -144,11 +144,25 @@ def listDir (p : Bytes) : IO (List Entry) := do
 
 /-! ## Sockets -/
 
-/-- Receive with a timeout: `none` = timed out, `some none` = peer closed. -/
+/-- Receive with a timeout: `none` = timed out, `some none` = peer closed.
+
+Built from two promises (the socket read and a libuv timer), whichever resolves first.
+`Selectable.one` would be simpler but costs ~4x throughput on Lean 4.35. After a timeout the
+caller closes the connection, so the abandoned read does no harm. -/
 def recvT (c : TCP.Socket.Client) (ms : Nat) : Async (Option (Option ByteArray)) := do
-  Selectable.one #[
-    .case (c.recvSelector 65536) (fun b => pure (some b)),
-    .case (← Selector.sleep (Std.Time.Millisecond.Offset.ofNat ms)) (fun _ => pure none)]
+  let recvP ← c.native.recv? 65536
+  let timer ← Std.Internal.UV.Timer.mk ms.toUInt64 false
+  let tickP ← timer.next
+  let out : IO.Promise (Option (Except IO.Error (Option ByteArray))) ← IO.Promise.new
+  BaseIO.chainTask recvP.result? fun r =>
+    out.resolve (some (r.getD (.error (IO.userError "receive dropped"))))
+  BaseIO.chainTask tickP.result? fun _ => out.resolve none
+  let r ← MonadAwait.await out.result!
+  timer.stop
+  match r with
+  | none => return none
+  | some (.ok v) => return some v
+  | some (.error e) => throw e
 
 /-- A client connection: plain TCP or TLS. -/
 structure Link where
@@ -574,7 +588,7 @@ def main (args : List String) : IO UInt32 := do
   if args.contains "-v" || args.contains "-V" then
     IO.println s!"lnginx version: leannginx/{version} (Lean 4, compiled to C)"
     if args.contains "-V" then
-      IO.println "verified (lake build): request parsing, path normalisation, location matching,\n  file confinement under root/alias, header sanitising, byte ranges (see LeanNginx/Spec.lean)\nTLS 1.3 server: LeanTLS (ChaCha20-Poly1305, X25519/P-256, ECDSA P-256 or RSA-PSS certificates)"
+      IO.println "verified (lake build): request parsing, path normalisation, location matching,\n  regex matching, file confinement under root/alias, header sanitising, byte ranges\n  (see LeanNginx/Spec.lean)\nTLS 1.3 server: LeanTLS (ChaCha20-Poly1305, X25519/P-256, ECDSA P-256 or RSA-PSS certificates)\ngzip: lean-zip (decompress (compress x) = x, proved)"
     return 0
   let opts ← match parseOpts args {} with
     | .ok (some o) => pure o
