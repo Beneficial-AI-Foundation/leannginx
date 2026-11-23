@@ -631,13 +631,19 @@ def serveConn (env : Env) (port : Nat) (ssl : Bool) (c : TCP.Socket.Client) : As
 
 /-! ## Listeners and main -/
 
+/-- `bind` with SO_REUSEPORT, so every worker process can listen on the same port (Linux; elsewhere
+libuv reports "operation not supported"). Implemented in `c/reuseport.c` until Lean's `Std.Async`
+has it (leanprover/lean4#16687). -/
+@[extern "lnginx_tcp_bind_reuseport"]
+opaque bindReusePortNative (socket : @& Std.Internal.UV.TCP.Socket) (addr : @& SocketAddress) : IO Unit
+
 structure Bound where
   sock : TCP.Socket.Server
   port : Nat
   ssl : Bool
   label : String
 
-def bindListen (l : Listen) : IO Bound := do
+def bindListen (reusePort : Bool) (l : Listen) : IO Bound := do
   let addrS := l.addr.getD "0.0.0.0"
   let sa : SocketAddress ←
     match IPv4Addr.ofString addrS with
@@ -647,7 +653,7 @@ def bindListen (l : Listen) : IO Bound := do
       | none => throw (IO.userError s!"host not found in \"{addrS}:{l.port}\" of the \"listen\" directive")
   let s ← TCP.Socket.Server.mk
   try
-    s.bind sa
+    if reusePort then bindReusePortNative s.native sa else s.bind sa
     s.listen 511
   catch e => throw (IO.userError s!"bind() to {addrS}:{l.port} failed ({e})")
   let shown := if addrS == "0.0.0.0" then "localhost" else if addrS.contains ':' then s!"[{addrS}]" else addrS
@@ -746,6 +752,30 @@ def main (args : List String) : IO UInt32 := do
       | .ok i => idents := idents.push (some i)
       | .error e => eprintln s!"[emerg] cannot load certificate \"{certF}\" / key \"{keyF}\": {e}"; return 1
     else idents := idents.push none
+  -- worker processes: with `worker_processes` > 1 this process becomes the master, starts the
+  -- workers (this binary again, marked by LNGINX_WORKER) and waits; each worker binds its own
+  -- listening sockets with SO_REUSEPORT and the kernel spreads connections over them.
+  let isWorker := (← IO.getEnv "LNGINX_WORKER").isSome
+  let mut nWorkers := match cfg.workers with
+    | some n => n
+    | none => max 1 (System.Platform.Internal.getHardwareConcurrency ()).toNat
+  if nWorkers > 1 && !isWorker && !System.Platform.isLinux then
+    eprintln s!"[warn] worker_processes {nWorkers}: SO_REUSEPORT load balancing needs Linux, running one process"
+    nWorkers := 1
+  if nWorkers > 1 && !isWorker then
+    let exe ← IO.appPath
+    IO.eprintln s!"leannginx/{version}: master, starting {nWorkers} worker processes"
+    let mut kids : Array (IO.Process.Child {}) := #[]
+    for i in [0:nWorkers] do
+      let workerEnv := #[("LNGINX_WORKER", some (toString i))]
+      let kid ← IO.Process.spawn { cmd := exe.toString, args := args.toArray, env := workerEnv }
+      kids := kids.push kid
+    let mut rc : UInt32 := 0
+    for k in kids do
+      let c ← k.wait
+      if c != 0 then rc := c
+    return rc
+  let quiet := isWorker && (← IO.getEnv "LNGINX_WORKER") != some "0"
   -- auth_basic_user_file: read once at startup (paths relative to the configuration directory)
   let allSettings := cfg.http.s :: cfg.http.servers.flatMap (fun sv => sv.s :: sv.locations.map (·.s))
   let mut users : List (Bytes × List (Bytes × Bytes)) := []
@@ -763,11 +793,12 @@ def main (args : List String) : IO UInt32 := do
     else acc ++ [l]) []
   let mut bound := #[]
   for l in uniq do
-    try bound := bound.push (← bindListen l)
+    try bound := bound.push (← bindListen isWorker l)
     catch e => eprintln s!"[emerg] {e}"; return 1
-  IO.eprintln s!"leannginx/{version}: prefix {pfx}, configuration {confFile}"
-  for b in bound do IO.eprintln s!"  listening on {b.label}"
-  IO.eprintln "  (Ctrl-C to stop)"
+  unless quiet do
+    IO.eprintln s!"leannginx/{version}: prefix {pfx}, configuration {confFile}"
+    for b in bound do IO.eprintln s!"  listening on {b.label}"
+    IO.eprintln "  (Ctrl-C to stop)"
   let loops : Async Unit := do
     match bound.toList with
     | [] => pure ()

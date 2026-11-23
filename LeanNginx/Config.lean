@@ -214,6 +214,8 @@ structure HttpConf where
 structure Config where
   http : HttpConf := {}
   errorLog : Option Bytes := none
+  /-- `worker_processes`: `some n` processes, `none` = `auto` (one per CPU core). -/
+  workers : Option Nat := some 1
   deriving Repr, Inhabited
 
 /-! ### Argument parsers -/
@@ -306,7 +308,7 @@ def parseReturn (args : List Bytes) : Except String (Nat × Option Bytes) :=
 
 /-- Tuning knobs of nginx's process model and buffers: accepted silently, no effect. -/
 def silentDirectives : List Bytes :=
-  [b!"worker_processes", b!"worker_connections", b!"user", b!"pid", b!"sendfile", b!"tcp_nopush",
+  [b!"worker_connections", b!"user", b!"pid", b!"sendfile", b!"tcp_nopush",
    b!"tcp_nodelay", b!"types_hash_max_size", b!"types_hash_bucket_size",
    b!"server_names_hash_bucket_size", b!"server_names_hash_max_size", b!"multi_accept",
    b!"use", b!"worker_rlimit_nofile", b!"client_body_buffer_size", b!"keepalive_requests",
@@ -517,6 +519,14 @@ where
         let h ← elabHttp d; cfg := { cfg with http := h }
       else if d.name == b!"error_log" then
         cfg := { cfg with errorLog := d.args.head? }
+      else if d.name == b!"worker_processes" then
+        needArgs d 1 1; noBlock d
+        let a := d.args.head!
+        if a == b!"auto" then cfg := { cfg with workers := none }
+        else match parseNat? a with
+          | some n => if n ≥ 1 then cfg := { cfg with workers := some n }
+                      else throw "invalid value \"0\" in \"worker_processes\" directive"
+          | none => throw s!"invalid value \"{toStr a}\" in \"worker_processes\" directive"
       else if ← elabIgnored d then continue
       else unknown d "main"
     unless seenHttp do throw "no \"http\" block in the configuration"
