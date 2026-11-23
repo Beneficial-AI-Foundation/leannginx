@@ -147,6 +147,10 @@ structure Settings where
   gzipMinLength : Option Nat := none
   gzipLevel : Option Nat := none
   gzipVary : Option Bool := none
+  /-- `auth_basic`: `some (some realm)` = on, `some none` = `off`. -/
+  authBasic : Option (Option Bytes) := none
+  /-- `auth_basic_user_file`, relative to the configuration directory. -/
+  authUserFile : Option Bytes := none
   deriving Repr, Inhabited
 
 def Settings.merge (child parent : Settings) : Settings where
@@ -164,6 +168,8 @@ def Settings.merge (child parent : Settings) : Settings where
   gzipMinLength := child.gzipMinLength <|> parent.gzipMinLength
   gzipLevel := child.gzipLevel <|> parent.gzipLevel
   gzipVary := child.gzipVary <|> parent.gzipVary
+  authBasic := child.authBasic <|> parent.authBasic
+  authUserFile := child.authUserFile <|> parent.authUserFile
 
 structure Location where
   kind : LocKind
@@ -382,6 +388,12 @@ def elabSetting (s : Settings) (d : Directive) : Elab (Option Settings) := do
     | some v => if 1 ≤ v && v ≤ 9 then return some { s with gzipLevel := some v }
                 else throw "\"gzip_comp_level\" must be between 1 and 9"
     | none => throw "\"gzip_comp_level\" directive invalid value"
+  if n == b!"auth_basic" then
+    needArgs d 1 1; noBlock d
+    let a := d.args.head!
+    return some { s with authBasic := some (if a == b!"off" then none else some a) }
+  if n == b!"auth_basic_user_file" then
+    needArgs d 1 1; noBlock d; return some { s with authUserFile := d.args.head? }
   if n == b!"client_max_body_size" then
     needArgs d 1 1; noBlock d
     match parseSize d.args.head! with

@@ -133,6 +133,8 @@ structure Env where
   /-- `(second, "Date" value)`, so the date is formatted once a second, not per response. -/
   dateCache : IO.Ref (Int × Bytes)
   fileCache : Std.Mutex FileCache
+  /-- `auth_basic_user_file` contents, keyed by the path as written in the configuration. -/
+  users : List (Bytes × List (Bytes × Bytes)) := []
 
 def Env.http (e : Env) : HttpConf := e.cfg.http
 
@@ -487,7 +489,8 @@ def handle (env : Env) (port : Nat) (peer : String) (c : Link) (req : Request)
                          host, method, remoteAddr := ofStr peer, serverPort := decDigits port,
                          scheme := c.scheme }
     let addH (code : Nat) := if addHeaderCodes.contains code then eff.addHeaders.getD [] else []
-    let a ← runStep (route env.http sv { req with method, query } vars np)
+    let a ← runStep (routeAuth env.http sv { req with method, query } vars np
+      (fun p => (env.users.lookup p).getD []) (header? req.headers b!"authorization"))
     match a with
     | .internal u =>
       let (p, q) := splitTarget u
@@ -506,7 +509,9 @@ def handle (env : Env) (port : Nat) (peer : String) (c : Link) (req : Request)
         | some np' => np := np'; query := q
         | none => return ← sendErrorPage env c head keep code
       | some orig, _ => return ← sendErrorPage env c head keep orig
-      | none, none => return ← sendErrorPage env c head keep code (if code == 405 then [] else addH code)
+      | none, none =>
+        let extra := (if code == 401 then authChallenge eff else []) ++ (if code == 405 then [] else addH code)
+        return ← sendErrorPage env c head keep code extra
     | .file path size mtime =>
       let mime := mimeFor env.http.types (eff.defaultType.getD b!"text/plain") path
       let some pathS := toStrStrict? path | return ← sendErrorPage env c head keep 404
@@ -741,7 +746,14 @@ def main (args : List String) : IO UInt32 := do
       | .ok i => idents := idents.push (some i)
       | .error e => eprintln s!"[emerg] cannot load certificate \"{certF}\" / key \"{keyF}\": {e}"; return 1
     else idents := idents.push none
-  let env : Env := { cfg, log, idents, watches := ← Std.Mutex.new {}, nextId := ← IO.mkRef 0,
+  -- auth_basic_user_file: read once at startup (paths relative to the configuration directory)
+  let allSettings := cfg.http.s :: cfg.http.servers.flatMap (fun sv => sv.s :: sv.locations.map (·.s))
+  let mut users : List (Bytes × List (Bytes × Bytes)) := []
+  for p in (allSettings.filterMap (·.authUserFile)).eraseDups do
+    let f := toStr (resolveIn confDir p)
+    try users := (p, parseUsers (ofStr (← IO.FS.readFile f))) :: users
+    catch e => eprintln s!"[warn] cannot read auth_basic_user_file \"{f}\" ({e}): access is refused"
+  let env : Env := { cfg, log, idents, users, watches := ← Std.Mutex.new {}, nextId := ← IO.mkRef 0,
                      dateCache := ← IO.mkRef (0, []), fileCache := ← Std.Mutex.new {} }
   -- listeners: one socket per distinct address:port (TLS if any `listen` on it says `ssl`)
   let listens := cfg.http.servers.flatMap (·.listens)

@@ -4,6 +4,7 @@ import LeanNginx.Http
 import LeanNginx.Config
 import LeanNginx.Route
 import LeanNginx.Response
+import LeanNginx.Auth
 import LeanNginx.Proofs.Basic
 import LeanNginx.Proofs.Route
 import LeanNginx.Proofs.Misc

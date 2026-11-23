@@ -1,6 +1,7 @@
 import LeanNginx.Proofs.Misc
 import LeanNginx.Proofs.Regex
 import Zip.Spec.GzipCorrect
+import LeanNginx.Auth
 /-!
 # leannginx specification
 
@@ -631,6 +632,96 @@ theorem vector_listen :
 
 theorem vector_sizes : parseSize b!"1m" = some 1048576 ∧ parseSize b!"10k" = some 10240 ∧
     parseTime b!"75s" = some 75 ∧ parseTime b!"2m" = some 120 := by
+  decide +kernel
+
+/-! ## 8. Basic authentication (nginx docs, `auth_basic`; nginx-tests: `auth_basic.t`) -/
+
+/-- A request without an `Authorization` header never passes. -/
+theorem basicOk_none (users : List (Bytes × Bytes)) : basicOk users none = false := rfl
+
+/-- `basicOk` only accepts a `Basic` header whose user is in the user file and whose password
+matches that user's stored hash. -/
+theorem basicOk_sound (users : List (Bytes × Bytes)) (authz : Option Bytes)
+    (h : basicOk users authz = true) :
+    ∃ v u p hash, authz = some v ∧ basicCreds v = some (u, p) ∧ (u, hash) ∈ users ∧
+      verifyCrypt hash p = true := by
+  unfold basicOk at h
+  cases authz with
+  | none => simp at h
+  | some v =>
+    cases hc : basicCreds v with
+    | none => simp [hc] at h
+    | some up =>
+      obtain ⟨u, p⟩ := up
+      simp only [Option.bind_some, hc, List.any_eq_true, Bool.and_eq_true, beq_iff_eq] at h
+      obtain ⟨⟨u', hash⟩, hmem, hu, hv⟩ := h
+      simp only at hu hv
+      exact ⟨v, u, p, hash, rfl, hc, hu ▸ hmem, hv⟩
+
+/-- `auth_basic` refuses exactly when it is on and the credentials do not check out. -/
+theorem authDenied_iff (eff : Settings) (users : Bytes → List (Bytes × Bytes)) (authz : Option Bytes) :
+    authDenied eff users authz = true ↔
+      (∃ realm, eff.authBasic = some (some realm)) ∧
+      basicOk (users (eff.authUserFile.getD [])) authz = false := by
+  unfold authDenied
+  rcases hb : eff.authBasic with _ | _ | realm <;> simp
+
+/-- With `auth_basic` on, a request without valid credentials is answered 401 before any file is
+looked at (unless a `return` answers first, as in nginx). -/
+theorem routeAuth_denied (h : HttpConf) (sv : Server) (req : Request) (v : Vars) (np : NPath)
+    (users : Bytes → List (Bytes × Bytes)) (authz : Option Bytes)
+    (hs : sv.ret = none)
+    (hl : ((selectLocation sv.locations np.uri).getD defaultLocation).ret = none)
+    (hd : authDenied (effective h sv ((selectLocation sv.locations np.uri).getD defaultLocation))
+      users authz = true) :
+    routeAuth h sv req v np users authz = .done (.error 401) := by
+  simp [routeAuth, hs, hl, hd]
+
+/-- When access is granted, routing is exactly `route`, so every routing spec above still holds. -/
+theorem routeAuth_allowed (h : HttpConf) (sv : Server) (req : Request) (v : Vars) (np : NPath)
+    (users : Bytes → List (Bytes × Bytes)) (authz : Option Bytes)
+    (hd : authDenied (effective h sv ((selectLocation sv.locations np.uri).getD defaultLocation))
+      users authz = false) :
+    routeAuth h sv req v np users authz = route h sv req v np := by
+  simp [routeAuth, hd]
+
+/-- `routeAuth` only ever adds a 401; any other answer is `route`'s. -/
+theorem routeAuth_cases (h : HttpConf) (sv : Server) (req : Request) (v : Vars) (np : NPath)
+    (users : Bytes → List (Bytes × Bytes)) (authz : Option Bytes) :
+    routeAuth h sv req v np users authz = .done (.error 401) ∨
+      routeAuth h sv req v np users authz = route h sv req v np := by
+  simp only [routeAuth]
+  by_cases hc : ((sv.ret.isNone && ((selectLocation sv.locations np.uri).getD defaultLocation).ret.isNone) &&
+      authDenied (effective h sv ((selectLocation sv.locations np.uri).getD defaultLocation)) users authz) = true
+  · exact Or.inl (if_pos hc)
+  · exact Or.inr (if_neg hc)
+
+/-- The 401 challenge header is a token name and a value with no CR, LF or NUL, whatever realm the
+configuration gives. -/
+theorem authChallenge_valid (eff : Settings) :
+    ∀ hv ∈ authChallenge eff, isToken hv.1 = true ∧ validValue hv.2 = true := by
+  unfold authChallenge
+  rcases eff.authBasic with _ | _ | realm
+  · simp
+  · simp
+  · simp only [List.mem_singleton, forall_eq]
+    refine ⟨by decide +kernel, ?_⟩
+    simp only [validValue, List.all_append, List.all_filter, Bool.and_eq_true]
+    refine ⟨⟨by decide +kernel, ?_⟩, by decide +kernel⟩
+    simp only [List.all_eq_true]
+    intro c _
+    cases fieldByteOk c <;> simp
+
+theorem vector_basic_creds :
+    basicCreds b!"Basic dXNlcjpwYXNz" = some (b!"user", b!"pass") ∧
+    basicCreds b!"basic dXNlcjpwYTpzcw==" = some (b!"user", b!"pa:ss") ∧
+    basicCreds b!"Bearer dXNlcjpwYXNz" = none ∧
+    basicCreds b!"Basic dXNlcnBhc3M=" = none := by
+  decide +kernel
+
+theorem vector_users :
+    parseUsers b!"# team\nbaif:$5$x$y\n\nother:$5$a$b:comment\n" =
+      [(b!"baif", b!"$5$x$y"), (b!"other", b!"$5$a$b")] := by
   decide +kernel
 
 end LeanNginx.Spec

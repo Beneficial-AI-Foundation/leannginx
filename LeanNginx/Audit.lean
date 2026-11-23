@@ -206,3 +206,30 @@ open LeanNginx.Spec
 
 /-- info: 'LeanNginx.Spec.vector_sizes' depends on axioms: [propext, Classical.choice, Quot.sound] -/
 #guard_msgs (whitespace := lax) in #print axioms vector_sizes
+
+/-- info: 'LeanNginx.Spec.basicOk_none' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs (whitespace := lax) in #print axioms basicOk_none
+
+/-- info: 'LeanNginx.Spec.basicOk_sound' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs (whitespace := lax) in #print axioms basicOk_sound
+
+/-- info: 'LeanNginx.Spec.authDenied_iff' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs (whitespace := lax) in #print axioms authDenied_iff
+
+/-- info: 'LeanNginx.Spec.routeAuth_denied' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs (whitespace := lax) in #print axioms routeAuth_denied
+
+/-- info: 'LeanNginx.Spec.routeAuth_allowed' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs (whitespace := lax) in #print axioms routeAuth_allowed
+
+/-- info: 'LeanNginx.Spec.routeAuth_cases' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs (whitespace := lax) in #print axioms routeAuth_cases
+
+/-- info: 'LeanNginx.Spec.authChallenge_valid' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs (whitespace := lax) in #print axioms authChallenge_valid
+
+/-- info: 'LeanNginx.Spec.vector_basic_creds' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs (whitespace := lax) in #print axioms vector_basic_creds
+
+/-- info: 'LeanNginx.Spec.vector_users' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs (whitespace := lax) in #print axioms vector_users
