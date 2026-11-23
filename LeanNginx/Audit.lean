@@ -144,6 +144,21 @@ open LeanNginx.Spec
 /-- info: 'LeanNginx.Spec.vector_alias' depends on axioms: [propext, Classical.choice, Quot.sound] -/
 #guard_msgs (whitespace := lax) in #print axioms vector_alias
 
+/-- info: 'LeanNginx.Spec.route_serves_root_file' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs (whitespace := lax) in #print axioms route_serves_root_file
+
+/-- info: 'LeanNginx.Spec.route_serves_alias_file' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs (whitespace := lax) in #print axioms route_serves_alias_file
+
+/-- info: 'LeanNginx.Spec.route_lists_only_if_enabled' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs (whitespace := lax) in #print axioms route_lists_only_if_enabled
+
+/-- info: 'LeanNginx.Spec.route_outside_irrelevant' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs (whitespace := lax) in #print axioms route_outside_irrelevant
+
+/-- info: 'LeanNginx.Spec.vector_alias_slash' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs (whitespace := lax) in #print axioms vector_alias_slash
+
 /-- info: 'LeanNginx.Spec.renderHead_values_safe' depends on axioms: [propext, Classical.choice, Quot.sound] -/
 #guard_msgs (whitespace := lax) in #print axioms renderHead_values_safe
 

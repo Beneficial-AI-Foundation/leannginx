@@ -7,6 +7,7 @@ import LeanNginx.Response
 import LeanNginx.Auth
 import LeanNginx.Proofs.Basic
 import LeanNginx.Proofs.Route
+import LeanNginx.Proofs.Serve
 import LeanNginx.Proofs.Misc
 import LeanNginx.Spec
 import LeanNginx.Proofs.Regex

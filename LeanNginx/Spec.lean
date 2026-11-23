@@ -2,6 +2,7 @@ import LeanNginx.Proofs.Misc
 import LeanNginx.Proofs.Regex
 import Zip.Spec.GzipCorrect
 import LeanNginx.Auth
+import LeanNginx.Proofs.Serve
 /-!
 # leannginx specification
 
@@ -441,6 +442,99 @@ theorem vector_routes :
 theorem vector_alias :
     tRoute b!"GET" b!"/img/a.png" = some (.file b!"/data/img/a.png" 20 0) ∧
     tRoute b!"GET" b!"/img../srv/www/index.html" = some (.error 404) := by
+  decide +kernel
+
+/-! ## 4b. Serving files: the right file (nginx docs, `root`, `alias`, `autoindex`;
+nginx-tests: `http_alias.t`, `autoindex.t`) -/
+
+/-- **The right file, with `root`.** For every configuration, request and file system: a GET or
+HEAD for a file path (`/a/b.html`) in a location with a `root` and without `alias`, `return`,
+`proxy_pass` or `try_files` looks at exactly one path, `root` followed by the request's URI, and
+
+* serves *that* file if it exists (never another one),
+* redirects to the same URI plus `/` if it is a directory,
+* answers 404 if nothing is there. -/
+theorem route_serves_root_file (h : HttpConf) (sv : Server) (req : Request) (v : Vars)
+    (raw : Bytes) (np : NPath) (hn : normalizePath raw = some np) (o : Bytes → Option Kind)
+    (l : Location) (hl : (selectLocation sv.locations np.uri).getD defaultLocation = l)
+    (hsv : sv.ret = none) (hret : l.ret = none) (hpx : l.proxy = none)
+    (htf : l.tryFiles = none) (hal : l.alias = none)
+    (hm : req.method = b!"GET" ∨ req.method = b!"HEAD") (hd : np.dir = false) :
+    let root := dropTrailingSlash ((effective h sv l).root.getD defaultRoot)
+    (route h sv req v np).run o =
+      match o (root ++ np.uri) with
+      | some (.file size mtime) => .file (root ++ np.uri) size mtime
+      | some .dir => .redirect 301 (withQuery (percentEncode (np.uri ++ [47])) req.query)
+      | none => .error 404 := by
+  intro root
+  have hs := route_static h sv req v np o l root np.segs hl hsv hret hpx htf hm hd
+    (by simp [fsTarget, hal, root])
+  rw [← normalizePath_file_uri raw np hn hd] at hs
+  exact hs
+
+/-- **The right file, with `alias`.** `location /img { alias /data/img/; }` (or
+`location /img/ …`): a GET or HEAD for `/img/x/y` looks at exactly `/data/img/x/y` and answers
+from it as above. Stated for every location prefix `/p₁/…/pₖ` (with or without the trailing
+slash) and every remainder `x/y/…` below it. -/
+theorem route_serves_alias_file (h : HttpConf) (sv : Server) (req : Request) (v : Vars)
+    (raw : Bytes) (np : NPath) (hn : normalizePath raw = some np) (o : Bytes → Option Kind)
+    (l : Location) (hl : (selectLocation sv.locations np.uri).getD defaultLocation = l)
+    (hsv : sv.ret = none) (hret : l.ret = none) (hpx : l.proxy = none)
+    (htf : l.tryFiles = none) (a : Bytes) (hal : l.alias = some a)
+    (hm : req.method = b!"GET" ∨ req.method = b!"HEAD") (hd : np.dir = false)
+    (p rest : List Bytes) (hsegs : np.segs = p ++ rest) (hne : rest ≠ [])
+    (hpre : l.uri = joinSegs p ∨ l.uri = joinSegs p ++ [47]) :
+    let file := dropTrailingSlash a ++ joinSegs rest
+    (route h sv req v np).run o =
+      match o file with
+      | some (.file size mtime) => .file file size mtime
+      | some .dir => .redirect 301 (withQuery (percentEncode (np.uri ++ [47])) req.query)
+      | none => .error 404 := by
+  intro file
+  have hsafe : ∀ s ∈ p ++ rest, Safe s := hsegs ▸ normalizePath_safe raw np hn
+  have hu := normalizePath_file_uri raw np hn hd
+  refine route_static h sv req v np o l _ rest hl hsv hret hpx htf hm hd ?_
+  simp only [fsTarget, hal, hu, hsegs, alias_segs p rest l.uri hsafe hpre hne]
+  rfl
+
+/-- **No directory listing unless it is switched on.** For every configuration, request and
+file system: if routing answers with a directory listing, then `autoindex on` is in effect for
+the location that handled the request (set there, in its `server`, or in `http`). -/
+theorem route_lists_only_if_enabled (h : HttpConf) (sv : Server) (req : Request) (v : Vars)
+    (np : NPath) (o : Bytes → Option Kind) (p : Bytes)
+    (hr : (route h sv req v np).run o = .autoindex p) :
+    let l := (selectLocation sv.locations np.uri).getD defaultLocation
+    (effective h sv l).autoindex = some true :=
+  route_autoindex' h sv req v np o p hr
+
+/-- **Files outside the served directory cannot change the answer.** Two file systems that agree
+on everything under the location's directory (its `alias`, else its `root`) give the same
+routing result for every configuration and request, whatever else exists, changes, or is
+missing on the machine. -/
+theorem route_outside_irrelevant (h : HttpConf) (sv : Server) (req : Request) (v : Vars)
+    (raw : Bytes) (np : NPath) (hn : normalizePath raw = some np) (o₁ o₂ : Bytes → Option Kind) :
+    let l := (selectLocation sv.locations np.uri).getD defaultLocation
+    (∀ path, Under (baseOf l (effective h sv l)) path → o₁ path = o₂ path) →
+    (route h sv req v np).run o₁ = (route h sv req v np).run o₂ := by
+  intro l hag
+  exact run_congr _ o₁ o₂ hag _ (route_confined h sv req v raw np hn)
+
+/-- `location /img/ { alias /data/img/; }` and a file system with `/data/img/x/a.png`. -/
+def tAliasServer : Server :=
+  { s := { root := some b!"/srv/www" },
+    locations := [{ kind := .pre, uri := b!"/img/", alias := some b!"/data/img/" }] }
+
+def tAliasFs (p : Bytes) : Option Kind :=
+  if p == b!"/data/img/x/a.png" then some (.file 5 0) else none
+
+def tAliasRoute (path : Bytes) : Option Action :=
+  (normalizePath path).map fun np => (route {} tAliasServer (tReq b!"GET" path) tVars np).run tAliasFs
+
+/-- The trailing-slash spelling of an alias location, on concrete requests. -/
+theorem vector_alias_slash :
+    tAliasRoute b!"/img/x/a.png" = some (.file b!"/data/img/x/a.png" 5 0) ∧
+    tAliasRoute b!"/img/x/b.png" = some (.error 404) ∧
+    tAliasRoute b!"/img/../../etc/passwd" = none := by
   decide +kernel
 
 /-! ## 5. Responses (nginx-tests: `http_headers_multi.t`, `range.t`, `not_modified.t`) -/
