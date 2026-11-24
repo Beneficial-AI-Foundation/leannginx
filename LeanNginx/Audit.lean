@@ -69,6 +69,18 @@ open LeanNginx.Spec
 /-- info: 'LeanNginx.Spec.normalizePath_segments_safe' depends on axioms: [propext, Classical.choice, Quot.sound] -/
 #guard_msgs (whitespace := lax) in #print axioms normalizePath_segments_safe
 
+/-- info: 'LeanNginx.Spec.normalizePath_decodes_once' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs (whitespace := lax) in #print axioms normalizePath_decodes_once
+
+/-- info: 'LeanNginx.Spec.normalizeDecoded_segments_safe' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs (whitespace := lax) in #print axioms normalizeDecoded_segments_safe
+
+/-- info: 'LeanNginx.Spec.normalizePath_uri_stable' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs (whitespace := lax) in #print axioms normalizePath_uri_stable
+
+/-- info: 'LeanNginx.Spec.normalizePath_uri_slash' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs (whitespace := lax) in #print axioms normalizePath_uri_slash
+
 /-- info: 'LeanNginx.Spec.percentDecode_encode' depends on axioms: [propext, Classical.choice, Quot.sound] -/
 #guard_msgs (whitespace := lax) in #print axioms percentDecode_encode
 
@@ -92,6 +104,9 @@ open LeanNginx.Spec
 
 /-- info: 'LeanNginx.Spec.vector_uri' depends on axioms: [propext, Classical.choice, Quot.sound] -/
 #guard_msgs (whitespace := lax) in #print axioms vector_uri
+
+/-- info: 'LeanNginx.Spec.vector_double_encoding' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs (whitespace := lax) in #print axioms vector_double_encoding
 
 /-- info: 'LeanNginx.Spec.regexHit_matches' depends on axioms: [propext, Classical.choice, Quot.sound] -/
 #guard_msgs (whitespace := lax) in #print axioms regexHit_matches
@@ -158,6 +173,24 @@ open LeanNginx.Spec
 
 /-- info: 'LeanNginx.Spec.vector_alias_slash' depends on axioms: [propext, Classical.choice, Quot.sound] -/
 #guard_msgs (whitespace := lax) in #print axioms vector_alias_slash
+
+/-- info: 'LeanNginx.Spec.tryFiles_uri_serves_request_file' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs (whitespace := lax) in #print axioms tryFiles_uri_serves_request_file
+
+/-- info: 'LeanNginx.Spec.route_internal_safe' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs (whitespace := lax) in #print axioms route_internal_safe
+
+/-- info: 'LeanNginx.Spec.route_confined_after_redirect' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs (whitespace := lax) in #print axioms route_confined_after_redirect
+
+/-- info: 'LeanNginx.Spec.internalTarget_segments_safe' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs (whitespace := lax) in #print axioms internalTarget_segments_safe
+
+/-- info: 'LeanNginx.Spec.vector_try_files_double_encoding' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs (whitespace := lax) in #print axioms vector_try_files_double_encoding
+
+/-- info: 'LeanNginx.Spec.vector_internal_redirects' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs (whitespace := lax) in #print axioms vector_internal_redirects
 
 /-- info: 'LeanNginx.Spec.renderHead_values_safe' depends on axioms: [propext, Classical.choice, Quot.sound] -/
 #guard_msgs (whitespace := lax) in #print axioms renderHead_values_safe

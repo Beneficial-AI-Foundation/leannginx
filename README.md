@@ -149,6 +149,8 @@ except `gzip_roundtrip`, which is lean-zip's theorem and also trusts the compile
   `/`, CR, LF, quotes or `<`.
 - *Paths:* every segment of a normalised path is safe (`normalizePath_segments_safe`);
   percent-decoding inverts percent-encoding; encoded output has no CR/LF/space/quotes/`<>`.
+  A request path is decoded exactly once (`normalizePath_decodes_once`), and reading its `$uri`
+  back gives the same path (`normalizePath_uri_stable`).
 - *Regex:* the matcher accepts a URI exactly when the URI is in the regex's language
   (`regexMatches_iff`, against the textbook inductive definition). It works by derivatives, so it
   never backtracks.
@@ -158,6 +160,12 @@ except `gzip_roundtrip`, which is lean-zip's theorem and also trusts the compile
   (`selectLocation_sound`, `_exact`, `_longest`, `_regex`, `_prefix_no_regex`). The selected
   server listens on the request's port.
 - *Confinement:* `route_confined` / `route_serves_under` (above).
+- *`try_files` and internal redirects:* `try_files $uri $uri/ …` in a `root` location can only
+  serve `root` + the request's own `$uri`, the URI its location (and `auth_basic`) was selected on
+  (`tryFiles_uri_serves_request_file`), so a double-encoded path (`/%2561dmin/…`) cannot be routed
+  by one location and served from another's files. Internal redirects (index files, the
+  `try_files` fallback) carry a normalised path that is not decoded again, and confinement holds
+  after them (`route_internal_safe`, `route_confined_after_redirect`).
 - *Responses:* header names and values written to the wire contain no CR/LF
   (`renderHead_values_safe`), autoindex text is HTML-escaped, byte ranges lie inside the file
   and `Content-Length` equals the bytes sent (`fileResponse_body_in_file`).
@@ -174,12 +182,13 @@ CL, `Host :`, obs-fold, NUL, HTTP/2.0, bad hosts, absolute-form), URI normalisat
 encoded traversal, `%00`, `%2F`), the full `location` example from nginx's documentation
 (A–E, including the `~*` regex), regex syntax and its error cases, end-to-end routing on a test
 server and file system (index, 301 for directories, autoindex, `return`, 404, 405, `alias`, the
-alias traversal), byte ranges, `Accept-Encoding` and `gzip_types`, the RFC 9110 date example,
+alias traversal), double-encoded requests against an `auth_basic` location and a denying location
+next to `try_files`, index files in directories named `a?b` and `100%`, byte ranges, `Accept-Encoding` and `gzip_types`, the RFC 9110 date example,
 ETags, server names, variables, config lexing/parsing, `listen` and size/time arguments.
 
 **Not covered by specs:** `Main.lean` (sockets, file reads, logs, the proxy's byte relay) and the
 TLS connection loop in `LeanTLS/Server.lean`. `scripts/smoke.sh` checks them end to end
-(49 checks, including hostile requests, HTTPS with ECDSA and RSA certificates, SNI, a TLS 1.2
+(52 checks, including hostile requests, HTTPS with ECDSA and RSA certificates, SNI, a TLS 1.2
 client being refused, gzip and regex locations).
 
 ```sh

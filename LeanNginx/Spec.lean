@@ -134,6 +134,32 @@ theorem normalizePath_segments_safe (raw : Bytes) (np : NPath) (h : normalizePat
     ∀ s ∈ np.segs, Safe s :=
   normalizePath_safe raw np h
 
+/-- **A request path is decoded exactly once.** `normalizePath` is `percentDecode` followed by
+`normalizeDecoded`, and `normalizeDecoded` (the only normaliser used after that point: for
+`$uri` in `try_files`, internal redirects and `error_page`) does no decoding at all. -/
+theorem normalizePath_decodes_once (raw : Bytes) (np : NPath) (h : normalizePath raw = some np) :
+    ∃ d, percentDecode raw = some d ∧ normalizeDecoded d = some np :=
+  normalizePath_decoded raw np h
+
+/-- Paths normalised without decoding are made of safe segments too. -/
+theorem normalizeDecoded_segments_safe (d : Bytes) (np : NPath) (h : normalizeDecoded d = some np) :
+    ∀ s ∈ np.segs, Safe s :=
+  normalizeDecoded_safe d np h
+
+/-- **`$uri` is stable.** Reading the `$uri` of a normalised request path back as a path gives
+the same segments and the same file/directory flag, for every request path: nothing in it is
+decoded, merged or resolved a second time. So a location that works on `$uri` (`try_files`) sees
+the path its `location` was selected on. -/
+theorem normalizePath_uri_stable (raw : Bytes) (np : NPath) (h : normalizePath raw = some np) :
+    normalizeDecoded np.uri = some np := by
+  obtain ⟨d, _, hd⟩ := normalizePath_decoded raw np h
+  exact normalizeDecoded_uri np (normalizeDecoded_safe d np hd) (normalizeDecoded_root_dir d np hd)
+
+/-- `$uri/` is the same path as a directory. -/
+theorem normalizePath_uri_slash (raw : Bytes) (np : NPath) (h : normalizePath raw = some np) :
+    normalizeDecoded (np.uri ++ b!"/") = some { np with dir := true } :=
+  normalizeDecoded_uri_slash np (normalizePath_safe raw np h)
+
 /-- Percent-decoding undoes percent-encoding, for all byte strings. -/
 theorem percentDecode_encode (b : Bytes) : percentDecode (percentEncode b) = some b :=
   percentDecode_percentEncode b
@@ -182,6 +208,18 @@ theorem vector_encoded_slash : normalizePath b!"/a%2Fb" = some ⟨[b!"a", b!"b"]
 /-- `NPath.uri` is nginx's `$uri`. -/
 theorem vector_uri : (normalizePath b!"/a//b/./c/").map NPath.uri = some b!"/a/b/c/" ∧
     (normalizePath b!"/x/%20y").map NPath.uri = some b!"/x/ y" := by
+  decide +kernel
+
+/-- A double-encoded path is decoded once: `%2561` is the three bytes `%61`, not `a`, and
+`%252e%252e` is a directory called `%2e%2e`, not `..`. Reading the result again changes nothing. -/
+theorem vector_double_encoding :
+    normalizePath b!"/%2561dmin/x" = some ⟨[b!"%61dmin", b!"x"], false⟩ ∧
+    (normalizePath b!"/%2561dmin/x").bind (normalizeDecoded ·.uri) =
+      some ⟨[b!"%61dmin", b!"x"], false⟩ ∧
+    normalizePath b!"/a/%252e%252e/b" = some ⟨[b!"a", b!"%2e%2e", b!"b"], false⟩ ∧
+    normalizeDecoded b!"/a/%2e%2e/b" = some ⟨[b!"a", b!"%2e%2e", b!"b"], false⟩ ∧
+    normalizeDecoded b!"/a/../b//c/" = some ⟨[b!"b", b!"c"], true⟩ ∧
+    normalizeDecoded b!"/../a" = none := by
   decide +kernel
 
 /-! ## 3. Location matching (nginx docs, `location`; nginx-tests: `http_location.t`) -/
@@ -429,7 +467,7 @@ def tRoute (m path : Bytes) : Option Action :=
 /-- `/` finds `index.html` (internal redirect), files are served, directories without a slash
 are redirected, `autoindex` lists, `return` answers, unknown paths are 404, POST is 405. -/
 theorem vector_routes :
-    tRoute b!"GET" b!"/" = some (.internal b!"/index.html") ∧
+    tRoute b!"GET" b!"/" = some (.internal ⟨[b!"index.html"], false⟩ none) ∧
     tRoute b!"GET" b!"/index.html" = some (.file b!"/srv/www/index.html" 10 0) ∧
     tRoute b!"GET" b!"/f" = some (.redirect 301 b!"/f/") ∧
     tRoute b!"GET" b!"/f/" = some (.autoindex b!"/srv/www/f") ∧
@@ -535,6 +573,140 @@ theorem vector_alias_slash :
     tAliasRoute b!"/img/x/a.png" = some (.file b!"/data/img/x/a.png" 5 0) ∧
     tAliasRoute b!"/img/x/b.png" = some (.error 404) ∧
     tAliasRoute b!"/img/../../etc/passwd" = none := by
+  decide +kernel
+
+/-! ## 4c. `try_files` and internal redirects: no second decoding (nginx docs, `try_files`,
+`index`; nginx-tests: `http_try_files.t`, `index.t`)
+
+A location is selected, and its `auth_basic` checked, on the normalised request path. These specs
+say that what `try_files` and internal redirects do afterwards is about that same path: a
+double-encoded request (`/%2561dmin/…`) cannot be routed by one location and then served from
+another one's files. -/
+
+/-- **`try_files $uri $uri/ …` serves the file the request names.** For every configuration,
+request and file system: in a location with a `root` (no `alias`) whose `try_files` entries
+before the fallback are `$uri` or `$uri/`, the only file that can be served is `root` followed by
+the request's own `$uri`, the URI the location was selected on (and, with `routeAuth`, the one
+`auth_basic` was decided for). In particular a file is never served for a directory path. -/
+theorem tryFiles_uri_serves_request_file (h : HttpConf) (sv : Server) (req : Request) (v : Vars)
+    (raw : Bytes) (np : NPath) (hn : normalizePath raw = some np) (hv : v.uri = np.uri)
+    (o : Bytes → Option Kind) (l : Location)
+    (hl : (selectLocation sv.locations np.uri).getD defaultLocation = l)
+    (hal : l.alias = none) (items : List Bytes) (last : Bytes)
+    (htf : l.tryFiles = some (items ++ [last]))
+    (hitems : ∀ i ∈ items, i = b!"$uri" ∨ i = b!"$uri/")
+    (path : Bytes) (size : Nat) (mtime : Int)
+    (hr : (route h sv req v np).run o = .file path size mtime) :
+    path = dropTrailingSlash ((effective h sv l).root.getD defaultRoot) ++ np.uri := by
+  obtain ⟨d, _, hd⟩ := normalizePath_decoded raw np hn
+  have hs := normalizeDecoded_safe d np hd
+  have hroot := normalizeDecoded_root_dir d np hd
+  have key : ∀ st : Step, st = route h sv req v np → st.run o = .file path size mtime →
+      np.dir = false ∧
+      path = dropTrailingSlash ((effective h sv l).root.getD defaultRoot) ++ joinSegs np.segs := by
+    intro st hst hrun
+    unfold route at hst
+    split at hst
+    · subst hst; exact absurd hrun (retAction_ne_file _ _ _ _ _)
+    · simp only [hl] at hst
+      split at hst
+      · subst hst; exact absurd hrun (retAction_ne_file _ _ _ _ _)
+      · subst hst; simp [Step.run] at hrun
+      · split at hst
+        · subst hst; simp [Step.run] at hrun
+        · simp only [htf] at hst
+          subst hst
+          exact tryFiles_uri_file l _ v req.query np hs hroot hv hal o last items hitems
+            path size mtime hrun
+  obtain ⟨hdir, hp⟩ := key _ rfl hr
+  rw [hp, normalizeDecoded_file_uri d np hd hdir]
+
+/-- **Internal redirects stay normalised.** For every configuration, request and file system: when
+routing a path of safe segments ends in an internal redirect (an index file was found, or
+`try_files` fell back to its last entry), the path it redirects to is made of safe segments
+again. The IO shell routes that path as it is, so every routing spec applies again at each hop. -/
+theorem route_internal_safe (h : HttpConf) (sv : Server) (req : Request) (v : Vars) (np : NPath)
+    (hnp : ∀ s ∈ np.segs, Safe s) (o : Bytes → Option Kind) (np' : NPath) (q : Option Bytes)
+    (hr : (route h sv req v np).run o = .internal np' q) : ∀ s ∈ np'.segs, Safe s := by
+  have := redirectsSafe_run o _ (route_redirects' h sv req v np hnp)
+  rw [hr] at this
+  exact this
+
+/-- **Confinement survives internal redirects.** After a request path was routed to an internal
+redirect, routing the redirect's path (with whatever method, query and variables the shell then
+uses) is confined to the directory of the location selected for *that* path. -/
+theorem route_confined_after_redirect (h : HttpConf) (sv : Server) (req req' : Request)
+    (v v' : Vars) (raw : Bytes) (np : NPath) (hn : normalizePath raw = some np)
+    (o : Bytes → Option Kind) (np' : NPath) (q : Option Bytes)
+    (hr : (route h sv req v np).run o = .internal np' q) :
+    let l := (selectLocation sv.locations np'.uri).getD defaultLocation
+    (route h sv req' v' np').Confined (Under (baseOf l (effective h sv l))) :=
+  route_confined' h sv req' v' np'
+    (route_internal_safe h sv req v np (normalizePath_safe raw np hn) o np' q hr)
+
+/-- The target of a `try_files` fallback or an `error_page` is made of safe segments, and is taken
+as written: `internalTarget` splits off the query and normalises, without decoding. -/
+theorem internalTarget_segments_safe (u : Bytes) (np : NPath) (q : Option Bytes)
+    (h : internalTarget u = some (np, q)) : ∀ s ∈ np.segs, Safe s :=
+  internalTarget_safe u np q h
+
+/-- A server with a protected directory and a denied file next to a `try_files` location, all
+under one `root`: `root /srv/www;`, `location /admin/ { auth_basic "admin"; }`,
+`location = /secret.html { return 403; }`, `location /app/ { try_files $uri /app/index.html?p=$uri; }`,
+`location / { try_files $uri $uri/ =404; }`. -/
+def tGuardServer : Server :=
+  { s := { root := some b!"/srv/www" },
+    locations := [{ kind := .pre, uri := b!"/admin/", s := { authBasic := some (some b!"admin") } },
+                  { kind := .exact, uri := b!"/secret.html", ret := some (403, none) },
+                  { kind := .pre, uri := b!"/app/",
+                    tryFiles := some [b!"$uri", b!"/app/index.html?p=$uri"] },
+                  { kind := .pre, uri := b!"/", tryFiles := some [b!"$uri", b!"$uri/", b!"=404"] }] }
+
+/-- A file system with `/srv/www/admin/secret.txt`, `/srv/www/secret.html`, `/srv/www/pub.txt`,
+and two directories with awkward names that hold an `index.html`: `a?b` and `100%`. -/
+def tGuardFs (p : Bytes) : Option Kind :=
+  if p == b!"/srv/www/admin/secret.txt" || p == b!"/srv/www/secret.html" ||
+     p == b!"/srv/www/pub.txt" || p == b!"/srv/www/a?b/index.html" ||
+     p == b!"/srv/www/100%/index.html" then some (.file 7 0)
+  else if p == b!"/srv/www" || p == b!"/srv/www/admin" || p == b!"/srv/www/a?b" ||
+     p == b!"/srv/www/100%" then some .dir
+  else none
+
+/-- Route a request without credentials, as the server does (`$uri` is the normalised path). -/
+def tGuardRoute (path : Bytes) : Option Action :=
+  (normalizePath path).map fun np =>
+    (routeAuth {} tGuardServer (tReq b!"GET" path) { tVars with uri := np.uri } np (fun _ => []) none).run tGuardFs
+
+/-- **Double encoding does not get around `auth_basic` or a `location` that denies.** The
+protected file asks for credentials however its path is spelled once-encoded; spelled
+twice-encoded (`%2561dmin`, `%252e%252e`, `%2573ecret.html`) it is a different, non-existent
+path, not a way into `/admin/` or to `/secret.html` through the `try_files` of `location /`. -/
+theorem vector_try_files_double_encoding :
+    tGuardRoute b!"/pub.txt" = some (.file b!"/srv/www/pub.txt" 7 0) ∧
+    tGuardRoute b!"/admin/secret.txt" = some (.error 401) ∧
+    tGuardRoute b!"/%61dmin/secret.txt" = some (.error 401) ∧
+    tGuardRoute b!"/x/%2e%2e/admin/secret.txt" = some (.error 401) ∧
+    tGuardRoute b!"/%2561dmin/secret.txt" = some (.error 404) ∧
+    tGuardRoute b!"/admin%252Fsecret.txt" = some (.error 404) ∧
+    tGuardRoute b!"/x/%252e%252e/admin/secret.txt" = some (.error 404) ∧
+    tGuardRoute b!"/secret.html" = some (.error 403) ∧
+    tGuardRoute b!"/%2573ecret.html" = some (.error 404) := by
+  decide +kernel
+
+/-- Index files are found by segments, so a directory whose name contains `?` or `%` works: the
+redirect names the file that was just found (no split at `?`, no decoding), and routing that
+path serves it. A `try_files` fallback is a URI: its query is split off, its path is not decoded. -/
+theorem vector_internal_redirects :
+    tGuardRoute b!"/a%3Fb/" = some (.internal ⟨[b!"a?b", b!"index.html"], false⟩ none) ∧
+    tGuardRoute b!"/100%25/" = some (.internal ⟨[b!"100%", b!"index.html"], false⟩ none) ∧
+    (route {} tGuardServer (tReq b!"GET" []) { tVars with uri := b!"/a?b/index.html" }
+      ⟨[b!"a?b", b!"index.html"], false⟩).run tGuardFs =
+      .file b!"/srv/www/a?b/index.html" 7 0 ∧
+    tGuardRoute b!"/app/%2561" =
+      some (.internal ⟨[b!"app", b!"index.html"], false⟩ (some b!"p=/app/%61")) ∧
+    internalTarget b!"/50x.html" = some (⟨[b!"50x.html"], false⟩, none) ∧
+    internalTarget b!"/e/%2e%2e/x?a=1" = some (⟨[b!"e", b!"%2e%2e", b!"x"], false⟩, some b!"a=1") ∧
+    internalTarget b!"@named" = none := by
   decide +kernel
 
 /-! ## 5. Responses (nginx-tests: `http_headers_multi.t`, `range.t`, `not_modified.t`) -/
