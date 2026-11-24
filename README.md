@@ -163,6 +163,10 @@ except `gzip_roundtrip`, which is lean-zip's theorem and also trusts the compile
   and `Content-Length` equals the bytes sent (`fileResponse_body_in_file`).
 - *gzip:* decompressing what the server sends returns the file (`gzip_roundtrip`); compression is
   used only for clients that accept it and never for range requests (`gzipApplies_requires`).
+- *Basic auth:* only a user from the user file with a matching password passes
+  (`basicOk_sound`), and a 401 comes before any file is looked at (`routeAuth_denied`). A password
+  longer than 511 bytes never matches and is not hashed (`verifyCrypt_long_password`), which
+  bounds the work one request can ask for (`cryptWork_bounded`).
 
 **In LeanTLS** (`LeanTLS/Spec/Server.lean`, kernel-checked): the server accepts only TLS 1.3,
 ChaCha20-Poly1305, a signature scheme the client offered and a well-formed key share it sent;
@@ -238,6 +242,8 @@ Where the time goes, and what was done about it:
 - `alias` deliberately differs from nginx in one case: with `location /img { alias /data/img; }`,
   `/imgx/a` maps to `/data/img/x/a` (always inside the alias directory), not `/data/imgx/a`.
 - Symlinks are followed, as in nginx's default (`disable_symlinks off`).
+- `auth_basic` accepts SHA-256-crypt (`$5$`) hashes only, and passwords of up to 511 bytes (the
+  limit of libxcrypt's `crypt`); longer ones get 401.
 
 ## License
 

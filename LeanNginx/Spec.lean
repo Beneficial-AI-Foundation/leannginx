@@ -752,6 +752,40 @@ theorem basicOk_sound (users : List (Bytes × Bytes)) (authz : Option Bytes)
       simp only at hu hv
       exact ⟨v, u, p, hash, rfl, hc, hu ▸ hmem, hv⟩
 
+/-- **A password check does a bounded amount of work.** A password longer than `maxPasswordLen`
+(511 bytes, the longest that libxcrypt's `crypt` takes) never matches, whatever the stored hash:
+`verifyCrypt` answers before it hashes anything. The password is attacker-chosen (it comes from
+the `Authorization` header, which may be tens of kilobytes) and SHA-256-crypt's cost grows with
+the square of its length. -/
+theorem verifyCrypt_long_password (h pw : Bytes) (hl : maxPasswordLen < pw.length) :
+    verifyCrypt h pw = false := by
+  simp [verifyCrypt, hl]
+
+/-- So a `Basic` header with such a password is refused, for every user and every user file. -/
+theorem basicOk_long_password (users : List (Bytes × Bytes)) (v u p : Bytes)
+    (hc : basicCreds v = some (u, p)) (hl : maxPasswordLen < p.length) :
+    basicOk users (some v) = false := by
+  simp [basicOk, hc, verifyCrypt_long_password _ p hl]
+
+/-- For every password that does get hashed, the one input of SHA-256-crypt that grows
+quadratically (the password repeated once per byte of itself, hashed into its "P" digest) is
+under 256 KiB. -/
+theorem cryptWork_bounded (pw : Bytes) (hl : pw.length ≤ maxPasswordLen) :
+    (repeatB (toBA pw) (toBA pw).size).size ≤ 511 * 511 := by
+  have hsz : (toBA pw).size = pw.length := by simp [toBA, ByteArray.size]
+  rw [repeatB_size, hsz]
+  exact Nat.mul_le_mul hl hl
+
+/-- The repeat that actually runs (`repeatBFast`: one buffer, appended to in a loop, registered
+with `@[csimp]`) computes the specified `repeatB`, for every input. -/
+theorem repeatB_fast (src : ByteArray) (k : Nat) : repeatB src k = repeatBFast src k :=
+  congrFun (congrFun repeatB_eq_fast src) k
+
+/-- The limit itself: 511 bytes pass the length check, 512 do not. -/
+theorem vector_password_limit : maxPasswordLen = 511 ∧
+    verifyCrypt b!"$5$abc$x" (List.replicate 512 97) = false := by
+  decide +kernel
+
 /-- `auth_basic` refuses exactly when it is on and the credentials do not check out. -/
 theorem authDenied_iff (eff : Settings) (users : Bytes → List (Bytes × Bytes)) (authz : Option Bytes) :
     authDenied eff users authz = true ↔

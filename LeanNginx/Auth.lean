@@ -66,9 +66,37 @@ def sha (b : ByteArray) : ByteArray := LeanTLS.SHA256.hash b
 def cycleTo (src : ByteArray) (n : Nat) : ByteArray :=
   if src.size = 0 then .empty else ⟨((List.range n).map fun i => src.get! (i % src.size)).toArray⟩
 
+/-- `src` repeated `k` times. This simple definition is the specification; compiled code runs
+`repeatBFast` instead (`repeatB_eq_fast`). Run as written it would copy the growing result at
+every step (`k² · src.size / 2` bytes in all) on a stack `k` frames deep. -/
 def repeatB (src : ByteArray) : Nat → ByteArray
   | 0 => .empty
   | k + 1 => src ++ repeatB src k
+
+/-- `acc` followed by `k` copies of `src`. Tail-recursive, and it appends to the one buffer it
+owns, so the work is linear in the size of the result. -/
+def repeatAcc (src : ByteArray) : Nat → ByteArray → ByteArray
+  | 0, acc => acc
+  | k + 1, acc => repeatAcc src k (acc ++ src)
+
+def repeatBFast (src : ByteArray) (k : Nat) : ByteArray := repeatAcc src k .empty
+
+theorem repeatB_comm (src : ByteArray) : ∀ k, src ++ repeatB src k = repeatB src k ++ src
+  | 0 => by simp [repeatB]
+  | k + 1 => by rw [repeatB, ByteArray.append_assoc, ← repeatB_comm src k]
+
+theorem repeatAcc_eq (src : ByteArray) : ∀ k acc, repeatAcc src k acc = acc ++ repeatB src k
+  | 0, acc => by simp [repeatAcc, repeatB]
+  | k + 1, acc => by rw [repeatAcc, repeatAcc_eq src k, repeatB, ByteArray.append_assoc]
+
+/-- The fast repeat computes the specified one; `@[csimp]` makes compiled code use it. -/
+@[csimp] theorem repeatB_eq_fast : @repeatB = @repeatBFast := by
+  funext src k; simp [repeatBFast, repeatAcc_eq]
+
+theorem repeatB_size (src : ByteArray) : ∀ k, (repeatB src k).size = k * src.size
+  | 0 => by simp [repeatB]
+  | k + 1 => by
+    simp [repeatB, ByteArray.size_append, repeatB_size src k, Nat.succ_mul, Nat.add_comm]
 
 /-- For each bit of `n`, least significant first: `b` for a one, `pw` for a zero. -/
 def bitParts (b pw : ByteArray) : Nat → Nat → ByteArray
@@ -107,11 +135,23 @@ def parseCrypt5 (h : Bytes) : Option (Nat × Bytes × Bytes) :=
   | [[], [53], salt, enc] => some (5000, salt.take 16, enc)
   | _ => none
 
-/-- Does `pw` match the stored SHA-256-crypt hash `h`? Any other hash format never matches. -/
+/-- The longest password that is hashed, in bytes. 511 is what libxcrypt accepts (the `crypt`
+behind nginx on current Linux systems: `CRYPT_MAX_PASSPHRASE_SIZE` is 512 with the terminator),
+so no password that works with nginx there is refused here. SHA-256-crypt hashes the password
+repeated `pw.size` times, and then `2 · pw.size` bytes or more in each of its rounds; the
+password comes straight from a request header, so without a limit a single request could ask
+for minutes of hashing. With it, the largest buffer built is under 256 KiB
+(`cryptWork_bounded` in `Spec.lean`). -/
+def maxPasswordLen : Nat := 511
+
+/-- Does `pw` match the stored SHA-256-crypt hash `h`? Any other hash format never matches, and
+neither does a password longer than `maxPasswordLen`: that one is refused before anything is
+hashed. -/
 def verifyCrypt (h pw : Bytes) : Bool :=
-  match parseCrypt5 h with
-  | some (rounds, salt, enc) => cryptEncode256 (sha256CryptRaw (toBA pw) (toBA salt) rounds) == enc
-  | none => false
+  if maxPasswordLen < pw.length then false
+  else match parseCrypt5 h with
+    | some (rounds, salt, enc) => cryptEncode256 (sha256CryptRaw (toBA pw) (toBA salt) rounds) == enc
+    | none => false
 
 -- Vectors from `openssl passwd -5` (5,000 rounds are too many for the kernel, so these are
 -- evaluated at build time rather than proved): short password, salt cut to 16 bytes, password
@@ -121,6 +161,9 @@ def verifyCrypt (h pw : Bytes) : Bool :=
 #guard verifyCrypt b!"$5$abc$qW8rTLSXKNArKNacA48LAFAdZNWfi84zou2Lg9tY4j3"
   b!"a much longer password that is more than thirty-two bytes long!!"
 #guard !verifyCrypt b!"$5$saltstring$5B8vYYiY.CVt1RlTTf8KbXBH3hsxY/GNooZaBBGWEc5" b!"Hello world"
+-- The longest password accepted, 511 times `a` (hash from glibc/libxcrypt `crypt`), and one byte more.
+#guard verifyCrypt b!"$5$rounds=1000$abc$Ds.3pDoIC42Vj2zijQnxXjRMQBosgjgz4XxSxuL0yJ8" (List.replicate 511 97)
+#guard !verifyCrypt b!"$5$rounds=1000$abc$Ds.3pDoIC42Vj2zijQnxXjRMQBosgjgz4XxSxuL0yJ8" (List.replicate 512 97)
 
 /-! ## The access check -/
 

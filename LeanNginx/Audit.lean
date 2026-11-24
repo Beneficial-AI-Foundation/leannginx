@@ -228,6 +228,21 @@ open LeanNginx.Spec
 /-- info: 'LeanNginx.Spec.basicOk_sound' depends on axioms: [propext, Classical.choice, Quot.sound] -/
 #guard_msgs (whitespace := lax) in #print axioms basicOk_sound
 
+/-- info: 'LeanNginx.Spec.verifyCrypt_long_password' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs (whitespace := lax) in #print axioms verifyCrypt_long_password
+
+/-- info: 'LeanNginx.Spec.basicOk_long_password' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs (whitespace := lax) in #print axioms basicOk_long_password
+
+/-- info: 'LeanNginx.Spec.cryptWork_bounded' depends on axioms: [propext, Quot.sound] -/
+#guard_msgs (whitespace := lax) in #print axioms cryptWork_bounded
+
+/-- info: 'LeanNginx.Spec.repeatB_fast' depends on axioms: [propext, Quot.sound] -/
+#guard_msgs (whitespace := lax) in #print axioms repeatB_fast
+
+/-- info: 'LeanNginx.Spec.vector_password_limit' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs (whitespace := lax) in #print axioms vector_password_limit
+
 /-- info: 'LeanNginx.Spec.authDenied_iff' depends on axioms: [propext, Classical.choice, Quot.sound] -/
 #guard_msgs (whitespace := lax) in #print axioms authDenied_iff
 

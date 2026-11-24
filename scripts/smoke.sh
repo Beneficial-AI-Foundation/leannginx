@@ -17,6 +17,7 @@ openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -keyou
 openssl req -x509 -newkey rsa:2048 -nodes -keyout "$TMP/rsa.key" -out "$TMP/rsa.crt" -days 2 \
   -subj /CN=rsa.test -addext "subjectAltName=DNS:rsa.test" 2>/dev/null
 python3 -c "print('<p>compress me</p>' * 2000)" > "$TMP/page.html"
+echo "smoke:$(openssl passwd -5 hunter2)" > "$TMP/users"
 python3 -m http.server $UP --bind 127.0.0.1 --directory "$TMP/up" >/dev/null 2>&1 & UPS=$!
 cat > "$TMP/t.conf" <<CONF
 http {
@@ -36,6 +37,7 @@ http {
     location ^~ /pics/ { return 200 "noregex\n"; }
     location /gz/ { alias $TMP/; gzip on; gzip_types text/css; }
     location /old/ { return 301 /; }
+    location /private/ { alias $TMP/up/; auth_basic "smoke"; auth_basic_user_file $TMP/users; }
     error_page 404 /404.html;
   }
   server { listen 127.0.0.1:$PORT; server_name *.vhost.test; return 200 "vhost \$host\n"; }
@@ -113,5 +115,10 @@ check "gzip off by default" "" "$(curl -s -o /dev/null -D - -H 'Accept-Encoding:
 check "gzip not for ranges" "" "$(curl -s -o /dev/null -D - -r 0-5 -H 'Accept-Encoding: gzip' $B/gz/page.html | grep -i content-encoding)"
 check "regex location"     "regex" "$(curl -s $B/a/b/C.JPG)"
 check "^~ beats regex"     "noregex" "$(curl -s $B/pics/x.gif)"
+check "auth required"      401 "$(code $B/private/u.txt)"
+check "auth ok"            "from upstream" "$(curl -s -u smoke:hunter2 $B/private/u.txt)"
+check "auth wrong password" 401 "$(code -u smoke:hunter3 $B/private/u.txt)"
+# a 16 kB password must be refused at once, not hashed (SHA-256-crypt is quadratic in its length)
+check "auth huge password" 401 "$(code -m 5 -u "smoke:$(head -c 16000 /dev/zero | tr '\0' a)" $B/private/u.txt)"
 check "access log"         1 "$(grep -c '"GET /files/hello.txt HTTP/1.1" 200 21' "$TMP/access.log" | awk '{print ($1>0)}')"
 [ $fail = 0 ] && echo "all smoke checks passed" || { echo "some smoke checks FAILED"; exit 1; }
