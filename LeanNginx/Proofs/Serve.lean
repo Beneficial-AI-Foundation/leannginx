@@ -49,7 +49,9 @@ theorem tryFiles_autoindex (l : Location) (eff : Settings) (v : Vars) (q : Optio
   | [], p, h => by simp [tryFiles, Step.run] at h
   | [last], p, h => by
     simp only [tryFiles] at h
-    split at h <;> simp [Step.run] at h
+    split at h
+    · simp [Step.run] at h
+    · split at h <;> simp [Step.run] at h
   | item :: r :: rs, p, h => by
     have ih := tryFiles_autoindex l eff v q o (r :: rs) p
     simp only [tryFiles] at h
@@ -113,16 +115,21 @@ theorem route_autoindex' (h : HttpConf) (sv : Server) (req : Request) (v : Vars)
 
 /-! ## Which file is served -/
 
-theorem normalizePath_file_uri (raw : Bytes) (np : NPath) (h : normalizePath raw = some np)
+theorem normalizeDecoded_file_uri (d : Bytes) (np : NPath) (h : normalizeDecoded d = some np)
     (hd : np.dir = false) : np.uri = joinSegs np.segs := by
-  unfold normalizePath at h
+  unfold normalizeDecoded at h
   split at h
   · simp only [bind, Option.bind_eq_some_iff, pure, Option.some.injEq] at h
-    obtain ⟨d, _, segs, _, rfl⟩ := h
+    obtain ⟨segs, _, rfl⟩ := h
     simp only [Bool.or_eq_false_iff] at hd
     have hne : segs.isEmpty = false := hd.2
     simp [NPath.uri, joinSegs, hne, hd.1]
   · cases h
+
+theorem normalizePath_file_uri (raw : Bytes) (np : NPath) (h : normalizePath raw = some np)
+    (hd : np.dir = false) : np.uri = joinSegs np.segs := by
+  obtain ⟨d, _, hn⟩ := normalizePath_decoded raw np h
+  exact normalizeDecoded_file_uri d np hn hd
 
 /-- With no `return`, `proxy_pass` or `try_files` in play, a GET/HEAD for a file path stats
 exactly one path and answers from it. -/
@@ -176,6 +183,12 @@ theorem normSegs_safe_id : ∀ (segs acc : List Bytes), (∀ s ∈ segs, Safe s)
       exact ⟨h1, by simpa using h2, by simpa using h3⟩
     simp [normSegs, h1.1, h1.2.1, h1.2.2, hok, ih]
 
+theorem safe_plain (s : Bytes) (hok : Safe s) :
+    s.isEmpty = false ∧ (s == b!".") = false ∧ (s == b!"..") = false := by
+  simp only [Safe, segOk, Bool.and_eq_true, Bool.not_eq_true', bne_iff_ne, ne_eq] at hok
+  obtain ⟨⟨⟨h1, h2⟩, h3⟩, _⟩ := hok
+  exact ⟨h1, by simpa using h2, by simpa using h3⟩
+
 theorem safe_no_slash (s : Bytes) (h : Safe s) : ∀ c ∈ s, c ≠ 47 := by
   intro c hc
   simp only [Safe, segOk, Bool.and_eq_true, List.all_eq_true] at h
@@ -204,6 +217,227 @@ theorem alias_segs (p rest : List Bytes) (luri : Bytes) (hall : ∀ s ∈ p ++ r
     rw [splitOnByte_joinSegs rs r (hns r List.mem_cons_self)
       (fun x hx => hns x (List.mem_cons_of_mem _ hx))]
     exact normSegs_safe_id (r :: rs) [] hr
+
+/-! ## `$uri` read back as a path: the same segments, nothing decoded -/
+
+theorem normSegs_empties : ∀ (k : Nat) (acc : List Bytes),
+    normSegs (List.replicate k []) acc = some acc.reverse
+  | 0, acc => by simp [normSegs]
+  | k + 1, acc => by simp [List.replicate_succ, normSegs, normSegs_empties k acc]
+
+/-- Safe segments followed by empty ones (trailing slashes) normalise to the safe segments. -/
+theorem normSegs_safe_empties : ∀ (segs acc : List Bytes) (k : Nat), (∀ s ∈ segs, Safe s) →
+    normSegs (segs ++ List.replicate k []) acc = some (acc.reverse ++ segs)
+  | [], acc, k, _ => by simp [normSegs_empties]
+  | s :: rest, acc, k, hs => by
+    have hok : segOk s = true := hs s List.mem_cons_self
+    have ih := normSegs_safe_empties rest (s :: acc) k
+      (fun x hx => hs x (List.mem_cons_of_mem _ hx))
+    have h1 : s.isEmpty = false ∧ (s == b!".") = false ∧ (s == b!"..") = false := by
+      simp only [segOk, Bool.and_eq_true, Bool.not_eq_true', bne_iff_ne, ne_eq] at hok
+      obtain ⟨⟨⟨h1, h2⟩, h3⟩, _⟩ := hok
+      exact ⟨h1, by simpa using h2, by simpa using h3⟩
+    simp [normSegs, h1.1, h1.2.1, h1.2.2, hok, ih]
+
+theorem joinSegs_empties (segs : List Bytes) (k : Nat) :
+    joinSegs (segs ++ List.replicate k []) = joinSegs segs ++ List.replicate k 47 := by
+  induction k with
+  | zero => simp [joinSegs]
+  | succ k ih =>
+    rw [List.replicate_succ', ← List.append_assoc]
+    simp only [joinSegs, List.flatMap_append] at ih ⊢
+    rw [ih, List.replicate_succ']
+    simp
+
+theorem normalizeDecoded_of_segs (d : Bytes) (segs : List Bytes) (hd : d.head? = some 47)
+    (hn : normSegs (splitOnByte 47 d) [] = some segs) :
+    normalizeDecoded d = some ⟨segs, lastSegDir d || segs.isEmpty⟩ := by
+  cases d with
+  | nil => simp at hd
+  | cons c d =>
+    simp only [List.head?_cons, Option.some.injEq] at hd
+    subst hd
+    simp [normalizeDecoded, hn]
+
+theorem split_join_empties (segs : List Bytes) (hs : ∀ s ∈ segs, Safe s) (k : Nat) :
+    splitOnByte 47 (joinSegs (segs ++ List.replicate k [])) = [] :: (segs ++ List.replicate k []) := by
+  have := splitOnByte_joinSegs (segs ++ List.replicate k []) [] (by simp) (by
+    intro r hr
+    cases List.mem_append.mp hr with
+    | inl e => exact safe_no_slash r (hs r e)
+    | inr e => rw [(List.mem_replicate.mp e).2]; simp)
+  simpa using this
+
+/-- `/seg₁/…/segₙ` (n ≥ 1) is read back as those segments, a file path. -/
+theorem normalizeDecoded_join (segs : List Bytes) (hs : ∀ s ∈ segs, Safe s) (hne : segs ≠ []) :
+    normalizeDecoded (joinSegs segs) = some ⟨segs, false⟩ := by
+  have hsp := split_join_empties segs hs 0
+  simp only [List.replicate_zero, List.append_nil] at hsp
+  have hhead : (joinSegs segs).head? = some 47 := by
+    cases segs with
+    | nil => exact absurd rfl hne
+    | cons a r => simp [joinSegs]
+  have hn : normSegs (splitOnByte 47 (joinSegs segs)) [] = some segs := by
+    rw [hsp]; simpa [normSegs] using normSegs_safe_id segs [] hs
+  rw [normalizeDecoded_of_segs _ segs hhead hn]
+  have hlast : lastSegDir (joinSegs segs) = false := by
+    unfold lastSegDir
+    rw [hsp]
+    obtain ⟨x, hx⟩ : ∃ x, segs.getLast? = some x := by
+      cases h : segs.getLast? with
+      | none => exact absurd (List.getLast?_eq_none_iff.mp h) hne
+      | some x => exact ⟨x, rfl⟩
+    have hxs := safe_plain x (hs x (List.mem_of_getLast? hx))
+    simp [List.getLast?_cons, hx, hxs.1, hxs.2.1, hxs.2.2]
+  have hemp : segs.isEmpty = false := by cases segs <;> simp_all
+  simp [hlast, hemp]
+
+/-- `/seg₁/…/segₙ` followed by one or more `/` is read back as those segments, a directory. -/
+theorem normalizeDecoded_join_slashes (segs : List Bytes) (hs : ∀ s ∈ segs, Safe s) (k : Nat) :
+    normalizeDecoded (joinSegs segs ++ List.replicate (k + 1) 47) = some ⟨segs, true⟩ := by
+  rw [← joinSegs_empties]
+  have hsp := split_join_empties segs hs (k + 1)
+  have hhead : (joinSegs (segs ++ List.replicate (k + 1) [])).head? = some 47 := by
+    cases segs <;> simp [joinSegs, List.replicate_succ]
+  have hn : normSegs (splitOnByte 47 (joinSegs (segs ++ List.replicate (k + 1) []))) [] =
+      some segs := by
+    rw [hsp]; simpa [normSegs] using normSegs_safe_empties segs [] (k + 1) hs
+  rw [normalizeDecoded_of_segs _ segs hhead hn]
+  have hlast : lastSegDir (joinSegs (segs ++ List.replicate (k + 1) [])) = true := by
+    unfold lastSegDir
+    rw [hsp, List.replicate_succ', ← List.append_assoc, ← List.cons_append, List.getLast?_concat]
+    rfl
+  simp [hlast]
+
+theorem uri_of_dir (np : NPath) (hd : np.dir = true) : np.uri = joinSegs np.segs ++ [47] := by
+  cases hs : np.segs <;> simp [NPath.uri, joinSegs, hd, hs]
+
+theorem uri_of_file (np : NPath) (hd : np.dir = false) (hne : np.segs ≠ []) :
+    np.uri = joinSegs np.segs := by
+  cases hs : np.segs with
+  | nil => exact absurd hs hne
+  | cons a r => simp [NPath.uri, joinSegs, hd, hs]
+
+/-- Normalising `$uri` gives back the path it was made from. -/
+theorem normalizeDecoded_uri (np : NPath) (hs : ∀ s ∈ np.segs, Safe s)
+    (hroot : np.segs = [] → np.dir = true) : normalizeDecoded np.uri = some np := by
+  obtain ⟨segs, dir⟩ := np
+  cases dir with
+  | true => rw [uri_of_dir _ rfl]; exact normalizeDecoded_join_slashes segs hs 0
+  | false =>
+    have hne : segs ≠ [] := fun he => by simpa using hroot he
+    rw [uri_of_file _ rfl hne]; exact normalizeDecoded_join segs hs hne
+
+/-- `$uri/` is the same segments, as a directory. -/
+theorem normalizeDecoded_uri_slash (np : NPath) (hs : ∀ s ∈ np.segs, Safe s) :
+    normalizeDecoded (np.uri ++ [47]) = some ⟨np.segs, true⟩ := by
+  obtain ⟨segs, dir⟩ := np
+  cases dir with
+  | true =>
+    rw [uri_of_dir _ rfl, List.append_assoc]; exact normalizeDecoded_join_slashes segs hs 1
+  | false =>
+    cases segs with
+    | nil => decide
+    | cons a r =>
+      rw [uri_of_file _ rfl (by simp)]; exact normalizeDecoded_join_slashes (a :: r) hs 0
+
+theorem normalizeDecoded_root_dir (d : Bytes) (np : NPath) (h : normalizeDecoded d = some np) :
+    np.segs = [] → np.dir = true := by
+  unfold normalizeDecoded at h
+  split at h
+  · simp only [bind, Option.bind_eq_some_iff, pure, Option.some.injEq] at h
+    obtain ⟨segs, _, rfl⟩ := h
+    intro he
+    simp only at he
+    simp [he]
+  · cases h
+
+/-! ## `try_files $uri $uri/ …` -/
+
+theorem expand_uri (v : Vars) : expand v b!"$uri" = v.uri := by
+  simp [expand, expandAux, takeVarName, isVarChar, isAlpha, isUpper, isLowerA, isDigit, Vars.lookup]
+
+theorem expand_uri_slash (v : Vars) : expand v b!"$uri/" = v.uri ++ [47] := by
+  simp [expand, expandAux, takeVarName, isVarChar, isAlpha, isUpper, isLowerA, isDigit, Vars.lookup]
+
+theorem serveDir_ne_file (eff : Settings) (np : NPath) (base : Bytes) (segs : List Bytes)
+    (o : Bytes → Option Kind) :
+    ∀ idxs p size mtime, (serveDir eff np base segs idxs).run o ≠ .file p size mtime
+  | [], p, size, mtime, h => by
+    simp only [serveDir, Step.run] at h
+    revert h
+    generalize o (base ++ joinSegs segs) = r
+    intro h
+    rcases r with _ | ⟨_, _⟩ | _ <;> simp [Step.run] at h
+    split at h <;> cases h
+  | idx :: rest, p, size, mtime, h => by
+    simp only [serveDir] at h
+    split at h
+    · simp only [Step.run] at h
+      revert h
+      generalize o (base ++ joinSegs (segs ++ [idx])) = r
+      intro h
+      rcases r with _ | ⟨_, _⟩ | _ <;> simp only [Step.run] at h
+      all_goals first | exact serveDir_ne_file eff np base segs o rest p size mtime h | cases h
+    · exact serveDir_ne_file eff np base segs o rest p size mtime h
+
+theorem retAction_ne_file (v : Vars) (r : Nat × Option Bytes) (p : Bytes) (size : Nat)
+    (mtime : Int) : (Step.done (retAction v r)).run o ≠ .file p size mtime := by
+  unfold retAction
+  split
+  · simp [Step.run]
+  · split <;> simp [Step.run]
+  · simp [Step.run]
+
+/-- `try_files` whose entries before the fallback are all `$uri` or `$uri/`, in a location with a
+`root`: the only file it can serve is `root` followed by the request's own segments. -/
+theorem tryFiles_uri_file (l : Location) (eff : Settings) (v : Vars) (q : Option Bytes)
+    (np : NPath) (hs : ∀ s ∈ np.segs, Safe s) (hroot : np.segs = [] → np.dir = true)
+    (hv : v.uri = np.uri) (hal : l.alias = none) (o : Bytes → Option Kind) (last : Bytes) :
+    ∀ (items : List Bytes), (∀ i ∈ items, i = b!"$uri" ∨ i = b!"$uri/") →
+    ∀ p size mtime, (tryFiles l eff v q (items ++ [last])).run o = .file p size mtime →
+      np.dir = false ∧ p = dropTrailingSlash (eff.root.getD defaultRoot) ++ joinSegs np.segs := by
+  intro items
+  induction items with
+  | nil =>
+    intro _ p size mtime h
+    simp only [List.nil_append, tryFiles] at h
+    split at h
+    · simp [Step.run] at h
+    · split at h <;> simp [Step.run] at h
+  | cons item rest ih =>
+    intro hi p size mtime h
+    have ih' := ih (fun i hm => hi i (List.mem_cons_of_mem _ hm)) p size mtime
+    obtain ⟨r, rs, hrs⟩ : ∃ r rs, rest ++ [last] = r :: rs := by
+      cases rest with
+      | nil => exact ⟨last, [], rfl⟩
+      | cons a t => exact ⟨a, t ++ [last], rfl⟩
+    rw [hrs] at ih'
+    rw [List.cons_append, hrs] at h
+    simp only [tryFiles] at h
+    rcases hi item List.mem_cons_self with rfl | rfl
+    · simp only [expand_uri, hv, normalizeDecoded_uri np hs hroot, fsTarget, hal, Step.run] at h
+      revert h
+      generalize o _ = res
+      intro h
+      rcases res with _ | ⟨_, _⟩ | _ <;> simp only at h
+      · exact ih' h
+      · split at h
+        · exact ih' h
+        · rename_i hd
+          simp only [Step.run, Action.file.injEq] at h
+          exact ⟨by simpa using hd, h.1.symm⟩
+      · split at h
+        · exact absurd h (serveDir_ne_file _ _ _ _ o _ p size mtime)
+        · exact ih' h
+    · simp only [expand_uri_slash, hv, normalizeDecoded_uri_slash np hs, fsTarget, hal, Step.run] at h
+      revert h
+      generalize o _ = res
+      intro h
+      rcases res with _ | ⟨_, _⟩ | _ <;> simp only [↓reduceIte] at h
+      · exact ih' h
+      · exact ih' h
+      · exact absurd h (serveDir_ne_file _ _ _ _ o _ p size mtime)
 
 end Proofs
 end LeanNginx

@@ -32,14 +32,27 @@ theorem normSegs_safe : ∀ (l acc r : List Bytes), (∀ s ∈ acc, Safe s) →
           | inr e => exact hacc x e
         · simp only [h3, ↓reduceIte] at h; simp at h
 
-theorem normalizePath_safe (raw : Bytes) (np : NPath) (h : normalizePath raw = some np) :
+theorem normalizeDecoded_safe (d : Bytes) (np : NPath) (h : normalizeDecoded d = some np) :
     ∀ s ∈ np.segs, Safe s := by
-  unfold normalizePath at h
+  unfold normalizeDecoded at h
   split at h
   · simp only [bind, Option.bind_eq_some_iff, pure, Option.some.injEq] at h
-    obtain ⟨d, _, segs, hs, rfl⟩ := h
+    obtain ⟨segs, hs, rfl⟩ := h
     exact normSegs_safe _ [] segs (by simp) hs
   · simp at h
+
+/-- A request path normalises by decoding once and then normalising the decoded bytes. -/
+theorem normalizePath_decoded (raw : Bytes) (np : NPath) (h : normalizePath raw = some np) :
+    ∃ d, percentDecode raw = some d ∧ normalizeDecoded d = some np := by
+  unfold normalizePath at h
+  split at h
+  · simpa only [Option.bind_eq_some_iff] using h
+  · simp at h
+
+theorem normalizePath_safe (raw : Bytes) (np : NPath) (h : normalizePath raw = some np) :
+    ∀ s ∈ np.segs, Safe s := by
+  obtain ⟨d, _, hd⟩ := normalizePath_decoded raw np h
+  exact normalizeDecoded_safe d np hd
 
 /-! ## Header fields -/
 

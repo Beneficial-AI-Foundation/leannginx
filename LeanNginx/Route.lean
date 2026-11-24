@@ -139,8 +139,9 @@ inductive Action where
   | error (code : Nat)
   /-- `return 444`: close the connection without answering -/
   | close
-  /-- re-run routing with this URI (index files, `try_files` fallback, `error_page`) -/
-  | internal (uri : Bytes)
+  /-- re-run routing on this path (index files, `try_files` fallback). The path is already
+  normalised and is not decoded again; `query`, when present, replaces the query string. -/
+  | internal (np : NPath) (query : Option Bytes)
   | proxy (up : Upstream) (uri : Bytes)
   deriving Repr, Inhabited, DecidableEq
 
@@ -184,12 +185,21 @@ def withQuery (uri : Bytes) (q : Option Bytes) : Bytes :=
   | some q => uri ++ [63] ++ q
   | none => uri
 
-/-- Directory request: first existing index file (internal redirect), else autoindex/403/404. -/
+/-- Target of an internal redirect that is written as a URI (the `try_files` fallback, an
+`error_page`): the query is split off at the first `?` and the path is normalised as it stands.
+It is not percent-decoded: like nginx, an internal redirect takes its path literally. -/
+def internalTarget (u : Bytes) : Option (NPath × Option Bytes) :=
+  match splitTarget u with
+  | (p, q) => (normalizeDecoded p).map (·, q)
+
+/-- Directory request: first existing index file (internal redirect), else autoindex/403/404.
+The redirect goes to the directory's own segments plus the index name, so the file routed next
+is the one that was just found: nothing is re-parsed, decoded or split at `?`. -/
 def serveDir (eff : Settings) (np : NPath) (base : Bytes) (segs : List Bytes) : List Bytes → Step
   | idx :: rest =>
     if segOk idx then
       .stat (base ++ joinSegs (segs ++ [idx])) fun
-        | some (.file _ _) => .done (.internal (np.uri ++ idx))
+        | some (.file _ _) => .done (.internal { segs := np.segs ++ [idx], dir := false } none)
         | _ => serveDir eff np base segs rest
     else serveDir eff np base segs rest
   | [] =>
@@ -208,16 +218,22 @@ def serveStatic (l : Location) (eff : Settings) (np : NPath) (query : Option Byt
         | some .dir => .done (.redirect 301 (withQuery (percentEncode (np.uri ++ [47])) query))
         | none => .done (.error 404)
 
-/-- `try_files a b … last`: the first of `a b …` that exists, else `last` (`=code` or a URI). -/
+/-- `try_files a b … last`: the first of `a b …` that exists, else `last` (`=code` or a URI).
+Entries are paths, not request targets: after variable expansion they are used as they stand
+(`normalizeDecoded`), never percent-decoded. `$uri` therefore names exactly the path the
+location was selected on (`tryFiles_uri_serves_request_file` in `Spec.lean`). A fallback URI
+that does not normalise is a 500. -/
 def tryFiles (l : Location) (eff : Settings) (v : Vars) (query : Option Bytes) : List Bytes → Step
   | [] => .done (.error 404)
   | [last] =>
     let e := expand v last
     if e.head? == some 61 then .done (.error ((parseNat? (e.drop 1)).getD 404))
-    else .done (.internal e)
+    else match internalTarget e with
+      | some (np, q) => .done (.internal np q)
+      | none => .done (.error 500)
   | item :: rest =>
     let e := expand v item
-    match normalizePath e with
+    match normalizeDecoded e with
     | none => tryFiles l eff v query rest
     | some np =>
       match fsTarget l eff np with

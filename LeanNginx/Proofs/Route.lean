@@ -26,6 +26,17 @@ def Action.Touches (P : Bytes → Prop) : Action → Prop
   | .autoindex p => P p
   | _ => True
 
+/-- An internal redirect goes to a path made of safe segments (any other action: nothing to say). -/
+def Action.RedirectSafe : Action → Prop
+  | .internal np _ => ∀ s ∈ np.segs, Safe s
+  | _ => True
+
+/-- Whatever the answers to its `stat` questions are, a stat program that ends in an internal
+redirect redirects to a path made of safe segments. -/
+def Step.RedirectsSafe : Step → Prop
+  | .done a => a.RedirectSafe
+  | .stat _ k => ∀ r, (k r).RedirectsSafe
+
 namespace Proofs
 
 theorem confined_run (P : Bytes → Prop) (o : Bytes → Option Kind) :
@@ -97,7 +108,9 @@ theorem tryFiles_confined (l : Location) (eff : Settings) (v : Vars) (q : Option
   | [] => by simp [tryFiles, Step.Confined]
   | [last] => by
     simp only [tryFiles]
-    split <;> simp [Step.Confined]
+    split
+    · simp [Step.Confined]
+    · split <;> simp [Step.Confined]
   | item :: r :: rs => by
     have ih := tryFiles_confined l eff v q (r :: rs)
     simp only [tryFiles]
@@ -107,7 +120,7 @@ theorem tryFiles_confined (l : Location) (eff : Settings) (v : Vars) (q : Option
       split
       · exact ih
       · rename_i base segs ht
-        obtain ⟨rfl, hs⟩ := fsTarget_ok l eff np _ _ (normalizePath_safe _ _ hnorm) ht
+        obtain ⟨rfl, hs⟩ := fsTarget_ok l eff np _ _ (normalizeDecoded_safe _ _ hnorm) ht
         simp only [Step.Confined]
         refine ⟨⟨segs, hs, rfl⟩, ?_⟩
         intro res
@@ -145,6 +158,114 @@ theorem route_confined' (h : HttpConf) (sv : Server) (req : Request) (v : Vars) 
       · split
         · exact tryFiles_confined _ _ _ _ _
         · exact serveStatic_confined _ _ _ _ hnp
+
+/-! ## Internal redirects -/
+
+theorem internalTarget_safe (u : Bytes) (np : NPath) (q : Option Bytes)
+    (h : internalTarget u = some (np, q)) : ∀ s ∈ np.segs, Safe s := by
+  unfold internalTarget at h
+  split at h
+  rename_i p q' _
+  cases hn : normalizeDecoded p with
+  | none => simp [hn] at h
+  | some np' =>
+    simp only [hn, Option.map_some, Option.some.injEq, Prod.mk.injEq] at h
+    exact h.1 ▸ normalizeDecoded_safe p np' hn
+
+theorem redirectsSafe_run (o : Bytes → Option Kind) :
+    ∀ s : Step, s.RedirectsSafe → (s.run o).RedirectSafe
+  | .done a, h => by cases a <;> simp_all [Step.run, Step.RedirectsSafe, Action.RedirectSafe]
+  | .stat p k, h => by
+    simp only [Step.run]
+    exact redirectsSafe_run o (k (o p)) (h (o p))
+
+theorem serveDir_redirects (eff : Settings) (np : NPath) (base : Bytes) (segs : List Bytes)
+    (hnp : ∀ s ∈ np.segs, Safe s) :
+    ∀ idxs, (serveDir eff np base segs idxs).RedirectsSafe
+  | [] => by
+    simp only [serveDir, Step.RedirectsSafe]
+    intro r
+    split
+    · split <;> simp [Step.RedirectsSafe, Action.RedirectSafe]
+    · simp [Step.RedirectsSafe, Action.RedirectSafe]
+  | idx :: rest => by
+    simp only [serveDir]
+    split
+    · rename_i hok
+      simp only [Step.RedirectsSafe]
+      intro r
+      split
+      · simp only [Step.RedirectsSafe, Action.RedirectSafe]
+        intro s hm
+        cases List.mem_append.mp hm with
+        | inl e => exact hnp s e
+        | inr e => simp at e; subst e; exact hok
+      · exact serveDir_redirects eff np base segs hnp rest
+    · exact serveDir_redirects eff np base segs hnp rest
+
+theorem serveStatic_redirects (l : Location) (eff : Settings) (np : NPath) (q : Option Bytes)
+    (hnp : ∀ s ∈ np.segs, Safe s) : (serveStatic l eff np q).RedirectsSafe := by
+  unfold serveStatic
+  split
+  · simp [Step.RedirectsSafe, Action.RedirectSafe]
+  · split
+    · exact serveDir_redirects eff np _ _ hnp _
+    · simp only [Step.RedirectsSafe]
+      intro r
+      split <;> simp [Step.RedirectsSafe, Action.RedirectSafe]
+
+theorem tryFiles_redirects (l : Location) (eff : Settings) (v : Vars) (q : Option Bytes) :
+    ∀ items, (tryFiles l eff v q items).RedirectsSafe
+  | [] => by simp [tryFiles, Step.RedirectsSafe, Action.RedirectSafe]
+  | [last] => by
+    simp only [tryFiles]
+    split
+    · simp [Step.RedirectsSafe, Action.RedirectSafe]
+    · split
+      · rename_i np q' ht
+        simpa [Step.RedirectsSafe, Action.RedirectSafe] using internalTarget_safe _ np q' ht
+      · simp [Step.RedirectsSafe, Action.RedirectSafe]
+  | item :: r :: rs => by
+    have ih := tryFiles_redirects l eff v q (r :: rs)
+    simp only [tryFiles]
+    split
+    · exact ih
+    · rename_i np hnorm
+      split
+      · exact ih
+      · simp only [Step.RedirectsSafe]
+        intro res
+        split
+        · split
+          · exact ih
+          · simp [Step.RedirectsSafe, Action.RedirectSafe]
+        · split
+          · exact serveDir_redirects eff np _ _ (normalizeDecoded_safe _ _ hnorm) _
+          · exact ih
+        · exact ih
+
+theorem retAction_redirects (v : Vars) (r : Nat × Option Bytes) :
+    (Step.done (retAction v r)).RedirectsSafe := by
+  unfold retAction
+  split
+  · simp [Step.RedirectsSafe, Action.RedirectSafe]
+  · split <;> simp [Step.RedirectsSafe, Action.RedirectSafe]
+  · simp [Step.RedirectsSafe, Action.RedirectSafe]
+
+theorem route_redirects' (h : HttpConf) (sv : Server) (req : Request) (v : Vars) (np : NPath)
+    (hnp : ∀ s ∈ np.segs, Safe s) : (route h sv req v np).RedirectsSafe := by
+  unfold route
+  split
+  · exact retAction_redirects _ _
+  · simp only
+    split
+    · exact retAction_redirects _ _
+    · simp [Step.RedirectsSafe, Action.RedirectSafe]
+    · split
+      · simp [Step.RedirectsSafe, Action.RedirectSafe]
+      · split
+        · exact tryFiles_redirects _ _ _ _ _
+        · exact serveStatic_redirects _ _ _ _ hnp
 
 /-! ## Location selection -/
 

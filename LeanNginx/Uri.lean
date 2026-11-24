@@ -56,13 +56,23 @@ def lastSegDir (raw : Bytes) : Bool :=
   | some s => s.isEmpty || s == b!"." || s == b!".."
   | none => true
 
-/-- Normalise an origin-form path (must start with `/`). -/
-def normalizePath (raw : Bytes) : Option NPath :=
-  match raw with
+/-- Normalise a path that is already percent-decoded (must start with `/`): merge `//`, drop `.`,
+resolve `..`. Nothing is decoded here, so a `%` is an ordinary byte. This is what `$uri`, a
+`try_files` entry and the target of an internal redirect go through: nginx decodes a request
+path exactly once, and decoding again would turn `%2561` into `a` behind the back of the
+location that was selected (and whose `auth_basic` was checked) on `%61`. -/
+def normalizeDecoded (d : Bytes) : Option NPath :=
+  match d with
   | 47 :: _ => do
-    let d ← percentDecode raw
     let segs ← normSegs (splitOnByte 47 d) []
     pure { segs, dir := lastSegDir d || segs.isEmpty }
+  | _ => none
+
+/-- Normalise an origin-form request path (must start with `/`): percent-decode it, once, then
+`normalizeDecoded`. Only the path of a request line goes through here. -/
+def normalizePath (raw : Bytes) : Option NPath :=
+  match raw with
+  | 47 :: _ => (percentDecode raw).bind normalizeDecoded
   | _ => none
 
 /-- Bytes that may appear unescaped in a path we put into a `Location` header or an HTML link

@@ -61,7 +61,7 @@ And it is used like nginx: it reads the same configuration files, so the two can
 **For all inputs:**
 
 - **Request heads (RFC 9112).** Methods and header names are tokens; header values contain no NUL, CR or LF, so they cannot inject headers anywhere they are copied. `Transfer-Encoding` is never accepted and every `Content-Length` agrees with the length used, which rules out CL/TE request smuggling. Hosts contain no `/`, quotes or angle brackets.
-- **Paths.** Every segment of a normalised path is safe, whatever the client sent, percent-encoded or not. Percent-decoding inverts percent-encoding, and encoded output contains no CR, LF, space, quote or `<>`.
+- **Paths.** Every segment of a normalised path is safe, whatever the client sent, percent-encoded or not. Percent-decoding inverts percent-encoding, and encoded output contains no CR, LF, space, quote or `<>`. A request path is decoded exactly once: `try_files $uri $uri/ …` can only serve the file named by the URI its location and `auth_basic` were selected on, and internal redirects (index files, the `try_files` fallback) are not decoded again, so a double-encoded path cannot reach another location's files.
 - **Locations.** The selected location matches the URI; an exact `=` location always wins; a chosen prefix location is the longest matching one; a chosen regex location is the first matching one in configuration order; a plain prefix is chosen only when no regex matches. The selected `server` listens on the port the request arrived on.
 - **Regex.** `regexMatches_iff`: the matcher accepts a URI if and only if the URI is in the language of the regex, as defined by the textbook inductive semantics.
 - **gzip.** `gzip_roundtrip` (lean-zip's theorem): decompressing what the server sends returns the file. Compression is only used for clients that accept it and never for range requests.
@@ -124,7 +124,7 @@ Verification is what made one of the optimisations safe. LeanTLS's Poly1305 now 
 - **The Lean kernel**, which checks the proofs.
 - **The Lean compiler, the C compiler, the runtime and libuv** (under `Std.Async`).
 - **lean-zip's `bv_decide` proofs**, which trust Lean's compiled proof checker; only the gzip theorem depends on them, and the axiom audit enforces that.
-- **`Main.lean` and the TLS connection loop**, which are not specified. `scripts/smoke.sh` checks them end to end with 49 checks, including hostile requests, HTTPS with ECDSA and RSA certificates, SNI, a TLS 1.2 client being refused, gzip, regex locations and 500 parallel downloads.
+- **`Main.lean` and the TLS connection loop**, which are not specified. `scripts/smoke.sh` checks them end to end with 52 checks, including hostile requests, HTTPS with ECDSA and RSA certificates, SNI, a TLS 1.2 client being refused, gzip, regex locations and 500 parallel downloads.
 - **Side channels.** LeanTLS's arithmetic is not constant-time.
 - **The file system.** Symbolic links are followed, as in nginx's default.
 

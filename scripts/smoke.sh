@@ -77,6 +77,8 @@ check "alias traversal"    404 "$(code --path-as-is "$B/img../conf/nginx.conf")"
 check "dotdot"             400 "$(code --path-as-is "$B/../../etc/passwd")"
 check "encoded dotdot"     400 "$(code "$B/files/%2e%2e/%2e%2e/%2e%2e/etc/passwd")"
 check "encoded NUL"        400 "$(code "$B/a%00b")"
+check "double-encoded path" 404 "$(code --path-as-is "$B/%2566iles/hello.txt")"
+check "double-encoded dotdot" 404 "$(code --path-as-is "$B/x/%252e%252e/files/hello.txt")"
 check "range"              "from" "$(curl -s -r 6-9 $B/files/hello.txt)"
 check "range 416"          416 "$(code -r 999- $B/files/hello.txt)"
 ET=$(curl -s -I $B/files/hello.txt | tr -d '\r' | awk -F': ' 'tolower($1)=="etag"{print $2}')

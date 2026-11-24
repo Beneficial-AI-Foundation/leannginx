@@ -492,21 +492,19 @@ def handle (env : Env) (port : Nat) (peer : String) (c : Link) (req : Request)
     let a ← runStep (routeAuth env.http sv { req with method, query } vars np
       (fun p => (env.users.lookup p).getD []) (header? req.headers b!"authorization"))
     match a with
-    | .internal u =>
-      let (p, q) := splitTarget u
-      match normalizePath p with
-      | some np' => np := np'; if q.isSome then query := q
-      | none => return ← sendErrorPage env c head keep 500
+    | .internal np' q =>
+      -- already normalised by `route` (`route_internal_safe`); never decoded a second time
+      np := np'
+      if q.isSome then query := q
     | .error code =>
       match errCode, (eff.errorPages.getD []).lookup code with
       | none, some page =>
         errCode := some code
         if method != b!"HEAD" then method := b!"GET"
-        let (p, q) := splitTarget page
-        if isPrefixB b!"http://" p || isPrefixB b!"https://" p then
+        if isPrefixB b!"http://" page || isPrefixB b!"https://" page then
           return ← sendErrorPage env c head keep 302 [(b!"Location", page)]
-        match normalizePath p with
-        | some np' => np := np'; query := q
+        match internalTarget page with
+        | some (np', q) => np := np'; query := q
         | none => return ← sendErrorPage env c head keep code
       | some orig, _ => return ← sendErrorPage env c head keep orig
       | none, none =>
