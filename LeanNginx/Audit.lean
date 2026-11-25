@@ -123,7 +123,7 @@ open LeanNginx.Spec
 /-- info: 'LeanNginx.Spec.mem_prefixFilter' depends on axioms: [propext, Classical.choice, Quot.sound] -/
 #guard_msgs (whitespace := lax) in #print axioms mem_prefixFilter
 
-/-- info: 'LeanNginx.Spec.regexMatches_iff' depends on axioms: [propext] -/
+/-- info: 'LeanNginx.Spec.regexMatches_iff' depends on axioms: [propext, Quot.sound] -/
 #guard_msgs (whitespace := lax) in #print axioms regexMatches_iff
 
 /-- info: 'LeanNginx.Spec.selectLocation_sound' depends on axioms: [propext, Classical.choice, Quot.sound] -/

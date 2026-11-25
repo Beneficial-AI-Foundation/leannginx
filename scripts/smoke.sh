@@ -37,6 +37,7 @@ http {
     location = /health { default_type text/plain; return 200 "ok\n"; }
     location = /gone { return 410; }
     location ~* \.(gif|jpe?g)$ { return 200 "regex\n"; }
+    location ~ ^/redos/(a|aa|aaa|a?a?a?)+b$ { return 200 "redos\n"; }
     location ^~ /pics/ { return 200 "noregex\n"; }
     location /gz/ { alias $TMP/; gzip on; gzip_types text/css; }
     location /old/ { return 301 /; }
@@ -124,6 +125,11 @@ check "gzip off by default" "" "$(curl -s -o /dev/null -D - -H 'Accept-Encoding:
 check "gzip not for ranges" "" "$(curl -s -o /dev/null -D - -r 0-5 -H 'Accept-Encoding: gzip' $B/gz/page.html | grep -i content-encoding)"
 check "regex location"     "regex" "$(curl -s $B/a/b/C.JPG)"
 check "^~ beats regex"     "noregex" "$(curl -s $B/pics/x.gif)"
+# ReDoS: an ambiguous operator regex against a long crafted input must stay bounded.
+# 4000 'a's with no trailing 'b' is the worst case for `(a|aa|aaa|a?a?a?)+b`; the
+# derivative matcher does constant work per byte, so this returns at once (404, no match).
+REDOS_URI="/redos/$(printf 'a%.0s' $(seq 1 4000))"
+check "regex no ReDoS"     404 "$(code --max-time 5 "$B$REDOS_URI")"
 check "auth required"      401 "$(code $B/private/u.txt)"
 check "auth ok"            "from upstream" "$(curl -s -u smoke:hunter2 $B/private/u.txt)"
 check "auth wrong password" 401 "$(code -u smoke:hunter3 $B/private/u.txt)"
