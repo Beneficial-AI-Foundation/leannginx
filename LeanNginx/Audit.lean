@@ -201,6 +201,15 @@ open LeanNginx.Spec
 /-- info: 'LeanNginx.Spec.htmlEscape_no_markup' depends on axioms: [propext, Classical.choice, Quot.sound] -/
 #guard_msgs (whitespace := lax) in #print axioms htmlEscape_no_markup
 
+/-- info: 'LeanNginx.Spec.percentEncodeSeg_relative' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs (whitespace := lax) in #print axioms percentEncodeSeg_relative
+
+/-- info: 'LeanNginx.Spec.autoindexHref_relative' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs (whitespace := lax) in #print axioms autoindexHref_relative
+
+/-- info: 'LeanNginx.Spec.vector_autoindex_href' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs (whitespace := lax) in #print axioms vector_autoindex_href
+
 /-- info: 'LeanNginx.Spec.resolveRange_in_file' depends on axioms: [propext, Classical.choice, Quot.sound] -/
 #guard_msgs (whitespace := lax) in #print axioms resolveRange_in_file
 
@@ -296,3 +305,9 @@ open LeanNginx.Spec
 
 /-- info: 'LeanNginx.Spec.vector_users' depends on axioms: [propext, Classical.choice, Quot.sound] -/
 #guard_msgs (whitespace := lax) in #print axioms vector_users
+
+/-- info: 'LeanNginx.Spec.routeAuth_file_authorized' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs (whitespace := lax) in #print axioms routeAuth_file_authorized
+
+/-- info: 'LeanNginx.Spec.vector_try_files_cross_location' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs (whitespace := lax) in #print axioms vector_try_files_cross_location

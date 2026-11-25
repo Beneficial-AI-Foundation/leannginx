@@ -616,7 +616,7 @@ theorem tryFiles_uri_serves_request_file (h : HttpConf) (sv : Server) (req : Req
         · subst hst; simp [Step.run] at hrun
         · simp only [htf] at hst
           subst hst
-          exact tryFiles_uri_file l _ v req.query np hs hroot hv hal o last items hitems
+          exact tryFiles_uri_file l _ v req.query _ np hs hroot hv hal o last items hitems
             path size mtime hrun
   obtain ⟨hdir, hp⟩ := key _ rfl hr
   rw [hp, normalizeDecoded_file_uri d np hd hdir]
@@ -725,6 +725,45 @@ theorem renderHead_names_safe (n : Bytes) :
 theorem htmlEscape_no_markup (b : Bytes) : ∀ c ∈ htmlEscape b, c ≠ 60 ∧ c ≠ 62 ∧ c ≠ 34 :=
   htmlEscape_safe b
 
+/-- **Autoindex links stay in the listed directory.** Whatever a file is called, its link has no
+`:` and no `/` before the directory slash, so it is a relative-path reference (RFC 3986 §4.2):
+a file named `javascript:alert(1)` is linked as `javascript%3Aalert(1)`, not run as script.
+(nginx links that name as written.) -/
+theorem percentEncodeSeg_relative (b : Bytes) : ∀ c ∈ percentEncodeSeg b, c ≠ 58 ∧ c ≠ 47 := by
+  induction b with
+  | nil => simp [percentEncodeSeg]
+  | cons c rest ih =>
+    intro x hx
+    simp only [percentEncodeSeg] at hx
+    split at hx
+    · rename_i hc
+      rcases List.mem_cons.mp hx with rfl | hx
+      · simp only [segSafeByte, Bool.and_eq_true, bne_iff_ne, ne_eq] at hc
+        exact ⟨hc.2, hc.1.2⟩
+      · exact ih x hx
+    · have hex : ∀ n, n < 16 → hexUpper n ≠ 58 ∧ hexUpper n ≠ 47 := by decide +kernel
+      have h1 := hex (c.toNat / 16) (by have := c.toNat_lt; omega)
+      have h2 := hex (c.toNat % 16) (Nat.mod_lt _ (by omega))
+      simp only [List.mem_cons] at hx
+      rcases hx with rfl | rfl | rfl | hx
+      · decide
+      · exact h1
+      · exact h2
+      · exact ih x hx
+
+/-- The link to a listed entry is one segment without `:` or `/`, plus `/` for a directory. -/
+theorem autoindexHref_relative (e : Entry) :
+    ∃ seg, (∀ c ∈ seg, c ≠ 58 ∧ c ≠ 47) ∧
+      (autoindexHref e = seg ∨ autoindexHref e = seg ++ [47]) := by
+  refine ⟨percentEncodeSeg e.name, percentEncodeSeg_relative e.name, ?_⟩
+  unfold autoindexHref
+  cases e.isDir <;> simp
+
+theorem vector_autoindex_href :
+    autoindexHref ⟨b!"javascript:alert(1)", false, 0, 0⟩ = b!"javascript%3Aalert(1)" ∧
+    autoindexHref ⟨b!"a b", true, 0, 0⟩ = b!"a%20b/" := by
+  decide +kernel
+
 /-- A satisfiable range lies inside the file. -/
 theorem resolveRange_in_file (size : Nat) (spec : Bytes) (a b : Nat)
     (h : resolveRange size spec = .part a b) : a ≤ b ∧ b < size :=
@@ -795,16 +834,17 @@ theorem gzip_roundtrip (data : ByteArray) (level : UInt8) (maxOut : Nat) (h : da
       .ok data :=
   Zip.Native.gzip_decompressSingle_compress data level maxOut h
 
-/-- A response is only compressed for a client that accepts gzip, and never for a range
-request (so `Content-Range` always refers to the file's own bytes). -/
+/-- A response is only compressed for a client that accepts gzip, never for a range request (so
+`Content-Range` always refers to the file's own bytes), and never for a file larger than
+`gzipMaxSize`, which bounds the memory one request can make the server spend on compression. -/
 theorem gzipApplies_requires (eff : Settings) (req : Request) (mime : Bytes) (size : Nat)
     (h : gzipApplies eff req mime size = true) :
     acceptsGzip req.headers = true ∧ header? req.headers b!"range" = none ∧
-      eff.gzip = some true := by
+      eff.gzip = some true ∧ size ≤ gzipMaxSize := by
   unfold gzipApplies at h
-  simp only [Bool.and_eq_true, Option.isNone_iff_eq_none] at h
-  obtain ⟨⟨⟨⟨hg, ha⟩, _⟩, _⟩, hr⟩ := h
-  refine ⟨ha, hr, ?_⟩
+  simp only [Bool.and_eq_true, Option.isNone_iff_eq_none, decide_eq_true_eq] at h
+  obtain ⟨⟨⟨⟨⟨hg, ha⟩, _⟩, _⟩, hmax⟩, hr⟩ := h
+  refine ⟨ha, hr, ?_, hmax⟩
   cases hgz : eff.gzip with
   | none => simp [hgz] at hg
   | some b => simp [hgz] at hg; simp [hg]
@@ -1022,6 +1062,77 @@ theorem vector_basic_creds :
 theorem vector_users :
     parseUsers b!"# team\nbaif:$5$x$y\n\nother:$5$a$b:comment\n" =
       [(b!"baif", b!"$5$x$y"), (b!"other", b!"$5$a$b")] := by
+  decide +kernel
+
+/-- **Authorization, end to end for one routing step.** For every configuration, request,
+credentials and file system: whenever routing behind `auth_basic` serves a file, that file is the
+file (under the location's `root` or `alias`) of some path that selects the *same* location as the
+request, and that location's access check passed for the credentials sent.
+
+So no entry of `try_files`, whatever variables it is built from (`try_files /q/$args.html` with
+`GET /?../admin/page`), can serve a file of a path that belongs to another location (say a
+protected `/admin/`) without that location's check: such a hit becomes an internal redirect, and
+the IO shell routes every hop through `routeAuth` again. -/
+theorem routeAuth_file_authorized (h : HttpConf) (sv : Server) (req : Request) (v : Vars)
+    (np : NPath) (users : Bytes → List (Bytes × Bytes)) (authz : Option Bytes)
+    (o : Bytes → Option Kind) (p : Bytes) (size : Nat) (mtime : Int)
+    (hr : (routeAuth h sv req v np users authz).run o = .file p size mtime) :
+    let l := (selectLocation sv.locations np.uri).getD defaultLocation
+    ∃ np', (selectLocation sv.locations np'.uri).getD defaultLocation = l ∧
+      Proofs.FileOf l (effective h sv l) np' p ∧
+      authDenied (effective h sv l) users authz = false := by
+  intro l
+  rcases routeAuth_cases h sv req v np users authz with h401 | hroute
+  · rw [h401] at hr; simp [Step.run] at hr
+  · rw [hroute] at hr
+    obtain ⟨np', hsel, hf⟩ := Proofs.route_file_own h sv req v np o p size mtime hr
+    refine ⟨np', hsel, hf, ?_⟩
+    -- the check ran unless a `return` answers, and a `return` never serves a file
+    by_cases hd : authDenied (effective h sv l) users authz = true
+    · exfalso
+      cases hs : sv.ret with
+      | some r =>
+        unfold route at hr; simp only [hs] at hr
+        exact Proofs.retAction_ne_file _ _ _ _ _ hr
+      | none =>
+        cases hlr : l.ret with
+        | some r =>
+          unfold route at hr; simp only [hs] at hr
+          simp only [l] at hlr
+          simp only [hlr] at hr
+          exact Proofs.retAction_ne_file _ _ _ _ _ hr
+        | none =>
+          have : routeAuth h sv req v np users authz = .done (.error 401) :=
+            routeAuth_denied h sv req v np users authz hs hlr hd
+          rw [this] at hroute
+          rw [← hroute] at hr
+          simp [Step.run] at hr
+    · simpa using hd
+
+/-- The cross-location case on a concrete server (`location = /` with `try_files /q/$args.html`,
+a protected `/admin/`): `GET /?../admin/page` with the file present is an internal redirect to
+`/admin/page.html`, not the file; the next hop answers 401. A path that belongs to the same
+location is still served directly. -/
+def tArgsServer : Server :=
+  { s := { root := some b!"/srv/www" },
+    locations := [{ kind := .exact, uri := b!"/", tryFiles := some [b!"/q/$args.html", b!"/index.html"] },
+                  { kind := .pre, uri := b!"/admin/", s := { authBasic := some (some b!"admin") } },
+                  { kind := .pre, uri := b!"/" }] }
+
+def tArgsVars (args : Bytes) : Vars :=
+  { uri := b!"/", requestUri := b!"/", args, host := b!"x", method := b!"GET",
+    remoteAddr := b!"-", serverPort := b!"80" }
+
+def tAllFiles : Bytes → Option Kind := fun _ => some (.file 1 0)
+
+theorem vector_try_files_cross_location :
+    ((routeAuth {} tArgsServer (tReq b!"GET" b!"/") (tArgsVars b!"../admin/page")
+        ⟨[], true⟩ (fun _ => []) none).run tAllFiles =
+      .internal ⟨[b!"admin", b!"page.html"], false⟩ none) ∧
+    ((routeAuth {} tArgsServer (tReq b!"GET" b!"/admin/page.html") (tArgsVars [])
+        ⟨[b!"admin", b!"page.html"], false⟩ (fun _ => []) none).run tAllFiles = .error 401) ∧
+    ((routeAuth {} tArgsServer (tReq b!"GET" b!"/") (tArgsVars b!"x")
+        ⟨[], true⟩ (fun _ => []) none).run tAllFiles = .internal ⟨[b!"q", b!"x.html"], false⟩ none) := by
   decide +kernel
 
 end LeanNginx.Spec

@@ -18,6 +18,9 @@ openssl req -x509 -newkey rsa:2048 -nodes -keyout "$TMP/rsa.key" -out "$TMP/rsa.
   -subj /CN=rsa.test -addext "subjectAltName=DNS:rsa.test" 2>/dev/null
 python3 -c "print('<p>compress me</p>' * 2000)" > "$TMP/page.html"
 echo "smoke:$(openssl passwd -5 hunter2)" > "$TMP/users"
+mkdir -p "$TMP/site/q" "$TMP/site/secret" "$TMP/ls"
+echo "games" > "$TMP/site/q/games.html"; echo "secret page" > "$TMP/site/secret/s.html"
+touch "$TMP/ls/javascript:alert(1)"
 python3 -m http.server $UP --bind 127.0.0.1 --directory "$TMP/up" >/dev/null 2>&1 & UPS=$!
 cat > "$TMP/t.conf" <<CONF
 http {
@@ -38,6 +41,10 @@ http {
     location /gz/ { alias $TMP/; gzip on; gzip_types text/css; }
     location /old/ { return 301 /; }
     location /private/ { alias $TMP/up/; auth_basic "smoke"; auth_basic_user_file $TMP/users; }
+    location = /cat { root $TMP/site; try_files /q/\$args.html =404; }
+    location /q/ { root $TMP/site; }
+    location /secret/ { root $TMP/site; auth_basic "smoke"; auth_basic_user_file $TMP/users; }
+    location /ls/ { alias $TMP/ls/; autoindex on; }
     error_page 404 /404.html;
   }
   server { listen 127.0.0.1:$PORT; server_name *.vhost.test; return 200 "vhost \$host\n"; }
@@ -122,5 +129,10 @@ check "auth ok"            "from upstream" "$(curl -s -u smoke:hunter2 $B/privat
 check "auth wrong password" 401 "$(code -u smoke:hunter3 $B/private/u.txt)"
 # a 16 kB password must be refused at once, not hashed (SHA-256-crypt is quadratic in its length)
 check "auth huge password" 401 "$(code -m 5 -u "smoke:$(head -c 16000 /dev/zero | tr '\0' a)" $B/private/u.txt)"
+check "try_files via own location" "games" "$(curl -s "$B/cat?games")"
+check "try_files no auth bypass" 401 "$(code --path-as-is "$B/cat?../secret/s")"
+check "try_files bypass, creds"  "secret page" "$(curl -s -u smoke:hunter2 --path-as-is "$B/cat?../secret/s")"
+check "names are case-exact"     404 "$(code "$B/SECRET/s.html")"
+check "autoindex link encoded"   1 "$(curl -s $B/ls/ | grep -c 'href="javascript%3Aalert(1)"')"
 check "access log"         1 "$(grep -c '"GET /files/hello.txt HTTP/1.1" 200 21' "$TMP/access.log" | awk '{print ($1>0)}')"
 [ $fail = 0 ] && echo "all smoke checks passed" || { echo "some smoke checks FAILED"; exit 1; }
