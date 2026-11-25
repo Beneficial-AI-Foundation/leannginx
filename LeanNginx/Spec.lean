@@ -1345,4 +1345,30 @@ theorem vector_vhost_confusion :
     nameMatches b!".example.com" b!"example.com" = true := by
   decide +kernel
 
+/-! ## 12. RFC MUSTs the IO shell relies on -/
+
+/-- **No `100 Continue` to an HTTP/1.0 client** (RFC 9110 §10.1.1 / RFC 9112 §9.3). The pure
+predicate the shell uses to decide whether to send an interim 100 is true only for HTTP/1.1. -/
+theorem wants100_only_http11 (r : Request) (h : r.wants100Continue = true) : r.minor = 1 := by
+  unfold Request.wants100Continue at h
+  simp only [Bool.and_eq_true, beq_iff_eq] at h
+  exact h.1
+
+/-- **Every 405 carries `Allow`** (RFC 9110 §15.5.6): the shell adds `errorExtraHeaders` to each
+error response, and for 405 that list contains `Allow: GET, HEAD` (the methods a static location
+serves), whatever the configuration. -/
+theorem errorExtraHeaders_405 (eff : Settings) :
+    (b!"Allow", b!"GET, HEAD") ∈ errorExtraHeaders eff 405 := by
+  simp [errorExtraHeaders]
+
+def tReq100 (minor : Nat) : Request :=
+  { method := b!"POST", target := b!"/", path := b!"/", query := none, minor,
+    headers := [(b!"expect", b!"100-continue")], host := some b!"x", contentLength := 3 }
+
+theorem vector_rfc_musts :
+    (tReq100 0).wants100Continue = false ∧
+    (tReq100 1).wants100Continue = true ∧
+    errorExtraHeaders {} 405 = [(b!"Allow", b!"GET, HEAD")] := by
+  decide +kernel
+
 end LeanNginx.Spec

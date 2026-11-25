@@ -353,3 +353,12 @@ open LeanNginx.Spec
 
 /-- info: 'LeanNginx.Spec.vector_vhost_confusion' depends on axioms: [propext, Classical.choice, Quot.sound] -/
 #guard_msgs (whitespace := lax) in #print axioms vector_vhost_confusion
+
+/-- info: 'LeanNginx.Spec.wants100_only_http11' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs (whitespace := lax) in #print axioms wants100_only_http11
+
+/-- info: 'LeanNginx.Spec.errorExtraHeaders_405' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs (whitespace := lax) in #print axioms errorExtraHeaders_405
+
+/-- info: 'LeanNginx.Spec.vector_rfc_musts' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs (whitespace := lax) in #print axioms vector_rfc_musts

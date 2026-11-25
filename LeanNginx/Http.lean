@@ -160,6 +160,12 @@ def parseRequest (head : Bytes) : Except Nat Request :=
       else .error 400
     | _ => .error 400
 
+/-- Whether an interim `100 Continue` should be sent: only to an HTTP/1.1 client that asked for
+it with `Expect: 100-continue`. RFC 9110 §10.1.1 / RFC 9112 §9.3: a server MUST NOT send 100 to an
+HTTP/1.0 client. The IO shell additionally sends it only while the body is still pending. -/
+def Request.wants100Continue (r : Request) : Bool :=
+  r.minor == 1 && (header? r.headers b!"expect").map lowerB == some b!"100-continue"
+
 /-- Should the connection stay open after this request? (RFC 9112 §9.3) -/
 def Request.keepAlive (r : Request) : Bool :=
   let conn := (headerVals r.headers b!"connection").map lowerB

@@ -3,8 +3,12 @@ import LeanNginx.Bytes
 # Regular expressions for `location ~` / `location ~*`
 
 A matcher based on Brzozowski derivatives, over bytes, with a proof that it decides the
-standard language semantics exactly (`matchB_iff` in `Proofs/Regex.lean`): no backtracking, so no
-catastrophic slow-downs either.
+standard language semantics exactly (`matchB_iff` in `Proofs/Regex.lean`). It never backtracks.
+It does not, however, fully normalise derivatives (`mkAlt` only collapses identical operands, not
+associativity/commutativity), so an *ambiguous* operator-written regex such as `(a|aa)+b` can still
+grow the derivative super-linearly on a crafted input. Operator-chosen patterns without overlapping
+repetition (e.g. `\.(png|svg|ico)$`) stay constant-size; a bounded-state compilation would remove
+the pathological case and is the intended follow-up.
 
 Supported syntax (the PCRE subset nginx configurations use in practice): literals, `.`, classes
 `[a-z0-9_]`, `[^…]`, `\d \w \s \D \W \S`, escapes, groups `(…)` and `(?:…)`, alternation `|`,

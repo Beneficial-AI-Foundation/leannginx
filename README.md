@@ -125,9 +125,10 @@ Routing needs to know which files exist, but the router is pure: `route` returns
 program (`Step`) that asks `stat` questions. `Main.lean` answers them with real `stat` calls;
 the specs quantify over *all* possible answers, so they hold whatever is on disk.
 
-Networking uses Lean's built-in `Std.Async` (libuv). leannginx and LeanTLS contain no
-hand-written C. lean-zip ships four small C primitives (fast byte copies), each with a pure-Lean
-reference and a proof that they agree.
+Networking uses Lean's built-in `Std.Async` (libuv). The only hand-written C in leannginx is
+`c/reuseport.c` (~114 lines: an SO_REUSEPORT bind and a socket-abort for the send timeout, until
+`Std.Async` offers them); LeanTLS has none. lean-zip ships four small C primitives (fast byte
+copies), each with a pure-Lean reference and a proof that they agree.
 
 The Lean version is 4.35.0 because that is what lean-zip's pinned commit builds with. When you
 update dependencies, use `lake update --keep-toolchain`, or Lake will move to LeanTLS's newer
