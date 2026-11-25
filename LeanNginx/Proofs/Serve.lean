@@ -44,8 +44,8 @@ theorem serveDir_autoindex (eff : Settings) (np : NPath) (base : Bytes) (segs : 
     · exact serveDir_autoindex eff np base segs o rest p h
 
 theorem tryFiles_autoindex (l : Location) (eff : Settings) (v : Vars) (q : Option Bytes)
-    (own : NPath → Bool) (o : Bytes → Option Kind) :
-    ∀ items p, (tryFiles l eff v q own items).run o = .autoindex p → eff.autoindex = some true
+    (own guarded : NPath → Bool) (o : Bytes → Option Kind) :
+    ∀ items p, (tryFiles l eff v q own guarded items).run o = .autoindex p → eff.autoindex = some true
   | [], p, h => by simp [tryFiles, Step.run] at h
   | [last], p, h => by
     simp only [tryFiles] at h
@@ -53,13 +53,15 @@ theorem tryFiles_autoindex (l : Location) (eff : Settings) (v : Vars) (q : Optio
     · simp [Step.run] at h
     · split at h <;> simp [Step.run] at h
   | item :: r :: rs, p, h => by
-    have ih := tryFiles_autoindex l eff v q own o (r :: rs) p
+    have ih := tryFiles_autoindex l eff v q own guarded o (r :: rs) p
     simp only [tryFiles] at h
     split at h
     · exact ih h
     · split at h
       · exact ih h
-      · simp only [Step.run] at h
+      · split at h
+        · simp [Step.run] at h
+        simp only [Step.run] at h
         revert h
         generalize o _ = res
         intro h
@@ -112,7 +114,7 @@ theorem route_autoindex' (h : HttpConf) (sv : Server) (req : Request) (v : Vars)
     · split at hr
       · simp [Step.run] at hr
       · split at hr
-        · exact tryFiles_autoindex _ _ _ _ _ o _ p hr
+        · exact tryFiles_autoindex _ _ _ _ _ _ o _ p hr
         · exact serveStatic_autoindex _ _ _ _ o p hr
 
 /-! ## Which file is served -/
@@ -394,10 +396,10 @@ theorem retAction_ne_file (v : Vars) (r : Nat × Option Bytes) (p : Bytes) (size
 /-- `try_files` whose entries before the fallback are all `$uri` or `$uri/`, in a location with a
 `root`: the only file it can serve is `root` followed by the request's own segments. -/
 theorem tryFiles_uri_file (l : Location) (eff : Settings) (v : Vars) (q : Option Bytes)
-    (own : NPath → Bool) (np : NPath) (hs : ∀ s ∈ np.segs, Safe s) (hroot : np.segs = [] → np.dir = true)
+    (own guarded : NPath → Bool) (np : NPath) (hs : ∀ s ∈ np.segs, Safe s) (hroot : np.segs = [] → np.dir = true)
     (hv : v.uri = np.uri) (hal : l.alias = none) (o : Bytes → Option Kind) (last : Bytes) :
     ∀ (items : List Bytes), (∀ i ∈ items, i = b!"$uri" ∨ i = b!"$uri/") →
-    ∀ p size mtime, (tryFiles l eff v q own (items ++ [last])).run o = .file p size mtime →
+    ∀ p size mtime, (tryFiles l eff v q own guarded (items ++ [last])).run o = .file p size mtime →
       np.dir = false ∧ p = dropTrailingSlash (eff.root.getD defaultRoot) ++ joinSegs np.segs := by
   intro items
   induction items with
@@ -418,7 +420,10 @@ theorem tryFiles_uri_file (l : Location) (eff : Settings) (v : Vars) (q : Option
     rw [List.cons_append, hrs] at h
     simp only [tryFiles] at h
     rcases hi item List.mem_cons_self with rfl | rfl
-    · simp only [expand_uri, hv, normalizeDecoded_uri np hs hroot, fsTarget, hal, Step.run] at h
+    · simp only [expand_uri, hv, normalizeDecoded_uri np hs hroot, fsTarget, hal] at h
+      split at h
+      · simp [Step.run] at h
+      simp only [Step.run] at h
       revert h
       generalize o _ = res
       intro h
@@ -436,7 +441,10 @@ theorem tryFiles_uri_file (l : Location) (eff : Settings) (v : Vars) (q : Option
           · exact absurd h (serveDir_ne_file _ _ _ _ o _ p size mtime)
           · simp [Step.run] at h
         · exact ih' h
-    · simp only [expand_uri_slash, hv, normalizeDecoded_uri_slash np hs, fsTarget, hal, Step.run] at h
+    · simp only [expand_uri_slash, hv, normalizeDecoded_uri_slash np hs, fsTarget, hal] at h
+      split at h
+      · simp [Step.run] at h
+      simp only [Step.run] at h
       revert h
       generalize o _ = res
       intro h
@@ -455,8 +463,8 @@ def FileOf (l : Location) (eff : Settings) (np : NPath) (p : Bytes) : Prop :=
 
 /-- A file served by `try_files` is the file of an entry path that `own` accepts. -/
 theorem tryFiles_file_owned (l : Location) (eff : Settings) (v : Vars) (q : Option Bytes)
-    (own : NPath → Bool) (o : Bytes → Option Kind) :
-    ∀ items p size mtime, (tryFiles l eff v q own items).run o = .file p size mtime →
+    (own guarded : NPath → Bool) (o : Bytes → Option Kind) :
+    ∀ items p size mtime, (tryFiles l eff v q own guarded items).run o = .file p size mtime →
       ∃ np', own np' = true ∧ FileOf l eff np' p
   | [], p, size, mtime, h => by simp [tryFiles, Step.run] at h
   | [last], p, size, mtime, h => by
@@ -465,7 +473,7 @@ theorem tryFiles_file_owned (l : Location) (eff : Settings) (v : Vars) (q : Opti
     · simp [Step.run] at h
     · split at h <;> simp [Step.run] at h
   | item :: r :: rs, p, size, mtime, h => by
-    have ih := tryFiles_file_owned l eff v q own o (r :: rs) p size mtime
+    have ih := tryFiles_file_owned l eff v q own guarded o (r :: rs) p size mtime
     simp only [tryFiles] at h
     split at h
     · exact ih h
@@ -473,6 +481,8 @@ theorem tryFiles_file_owned (l : Location) (eff : Settings) (v : Vars) (q : Opti
       split at h
       · exact ih h
       · rename_i base segs ht
+        split at h
+        · simp [Step.run] at h
         simp only [Step.run] at h
         revert h
         generalize o _ = res
@@ -528,9 +538,24 @@ theorem route_file_own (h : HttpConf) (sv : Server) (req : Request) (v : Vars) (
     · split at hr
       · simp [Step.run] at hr
       · split at hr
-        · obtain ⟨np', hown, hf⟩ := tryFiles_file_owned _ _ _ _ _ o _ p size mtime hr
+        · obtain ⟨np', hown, hf⟩ := tryFiles_file_owned _ _ _ _ _ _ o _ p size mtime hr
           exact ⟨np', by simpa using hown, hf⟩
         · exact ⟨np, rfl, serveStatic_file_own _ _ _ _ o p size mtime hr⟩
+
+
+/-- **A `try_files` entry targeting a protected location does not `stat` its file.** When the
+expanded, normalised entry path `np` selects a *different*, password-protected location
+(`guarded np = true`), the entry resolves to an internal redirect to `np` for *every* filesystem
+oracle `o`. So whether that location's protected file exists never changes this location's answer:
+no existence oracle across the `auth_basic` boundary. (An unprotected cross-location path is not
+`guarded`, so a catalog like `try_files /q/$args.html /index.html` keeps its normal fallthrough.) -/
+theorem tryFiles_crossLoc (l : Location) (eff : Settings) (v : Vars) (q : Option Bytes)
+    (own guarded : NPath → Bool) (item r : Bytes) (rest : List Bytes) (np : NPath) (base : Bytes)
+    (segs : List Bytes) (hn : normalizeDecoded (expand v item) = some np)
+    (hf : fsTarget l eff np = some (base, segs)) (hg : guarded np = true)
+    (o : Bytes → Option Kind) :
+    (tryFiles l eff v q own guarded (item :: r :: rest)).run o = .internal np none := by
+  simp only [tryFiles, hn, hf, hg, if_true, Step.run]
 
 end Proofs
 end LeanNginx

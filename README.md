@@ -171,10 +171,11 @@ except `gzip_roundtrip`, which is lean-zip's theorem and also trusts the compile
   that selects the *same* location as the request, and that location's access check passed
   (`routeAuth_file_authorized`). A `try_files` entry built from client input
   (`try_files /q/$args.html` with `GET /?../admin/page`) therefore cannot serve a protected
-  location's file: a hit that belongs to another location becomes an internal redirect, and that
-  location's rules decide **what is served** (nginx serves it outright, past `/admin/`'s
-  `auth_basic`). The proof covers the file served, not whether the protected file's *existence*
-  leaks through this path — it can, as a 1-bit oracle.
+  location's file: a hit that belongs to another location becomes an internal redirect — resolved
+  *without* `stat`ing that location's file, so its existence cannot leak — and that location's
+  rules then decide (nginx serves it outright, past `/admin/`'s `auth_basic`). Proved:
+  `routeAuth_file_authorized` (the file served is authorized) and `tryFiles_crossLoc_noLeak`
+  (the cross-location case is non-interfering).
 - *Request framing:* the head ends at the first empty line of the buffer, the body starts right
   after it and inside the buffer (`findHeadEnd_first`).
 - *Hosts and credentials:* the host a request is routed by contains host characters only

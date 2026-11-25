@@ -226,13 +226,13 @@ that does not normalise is a 500.
 
 `own np` says whether the path `np` belongs to this location (selects it). A file or directory
 found for an entry that belongs to another location is not served here: routing continues with an
-internal redirect to it, so that location's rules, `auth_basic` among them, decide what is served. nginx would
+internal redirect to it (without `stat`ing it, so its existence does not leak), so that location's rules, `auth_basic` among them, decide. nginx would
 serve it under the current location; with an entry built from client input
 (`try_files /q/$args.html`, `GET /?../admin/x`) that serves another location's files without its
 access check. Here a file is only ever served for a path of the location whose access check passed
 (`routeAuth_file_authorized`). -/
 def tryFiles (l : Location) (eff : Settings) (v : Vars) (query : Option Bytes)
-    (own : NPath → Bool) : List Bytes → Step
+    (own : NPath → Bool) (guarded : NPath → Bool) : List Bytes → Step
   | [] => .done (.error 404)
   | [last] =>
     let e := expand v last
@@ -243,22 +243,28 @@ def tryFiles (l : Location) (eff : Settings) (v : Vars) (query : Option Bytes)
   | item :: rest =>
     let e := expand v item
     match normalizeDecoded e with
-    | none => tryFiles l eff v query own rest
+    | none => tryFiles l eff v query own guarded rest
     | some np =>
       match fsTarget l eff np with
-      | none => tryFiles l eff v query own rest
+      | none => tryFiles l eff v query own guarded rest
       | some (base, segs) =>
-        .stat (base ++ joinSegs segs) fun
-          | some (.file size mtime) =>
-            if np.dir then tryFiles l eff v query own rest
-            else if own np then .done (.file (base ++ joinSegs segs) size mtime)
-            else .done (.internal np none)
-          | some .dir =>
-            if np.dir then
-              if own np then serveDir eff np base segs (eff.index.getD [b!"index.html"])
+        -- A path that selects a *different*, password-protected location hands off to it without a
+        -- `stat`, so whether that location's file exists never shows in this location's answer (no
+        -- existence oracle across `auth_basic`). An unprotected cross-location path keeps the normal
+        -- stat-then-fallthrough, so a catalog like `try_files /q/$args.html /index.html` still works.
+        if guarded np then .done (.internal np none)
+        else
+          .stat (base ++ joinSegs segs) fun
+            | some (.file size mtime) =>
+              if np.dir then tryFiles l eff v query own guarded rest
+              else if own np then .done (.file (base ++ joinSegs segs) size mtime)
               else .done (.internal np none)
-            else tryFiles l eff v query own rest
-          | none => tryFiles l eff v query own rest
+            | some .dir =>
+              if np.dir then
+                if own np then serveDir eff np base segs (eff.index.getD [b!"index.html"])
+                else .done (.internal np none)
+              else tryFiles l eff v query own guarded rest
+            | none => tryFiles l eff v query own guarded rest
 
 /-- The implicit location used when no `location` matches. -/
 def defaultLocation : Location := { kind := .pre, uri := b!"/" }
@@ -288,7 +294,9 @@ def route (h : HttpConf) (sv : Server) (req : Request) (v : Vars) (np : NPath) :
       if !(req.method == b!"GET" || req.method == b!"HEAD") then .done (.error 405)
       else match l.tryFiles with
         | some items =>
-          tryFiles l eff v req.query (fun p => (selectLocation sv.locations p.uri).getD defaultLocation == l) items
+          tryFiles l eff v req.query (fun p => (selectLocation sv.locations p.uri).getD defaultLocation == l)
+            (fun p => let l' := (selectLocation sv.locations p.uri).getD defaultLocation
+                      !(l' == l) && (match (effective h sv l').authBasic with | some (some _) => true | _ => false)) items
         | none => serveStatic l eff np req.query
 
 end LeanNginx

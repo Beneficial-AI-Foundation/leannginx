@@ -104,8 +104,8 @@ theorem serveStatic_confined (l : Location) (eff : Settings) (np : NPath) (q : O
       exact ⟨segs, hs, rfl⟩
 
 theorem tryFiles_confined (l : Location) (eff : Settings) (v : Vars) (q : Option Bytes)
-    (own : NPath → Bool) :
-    ∀ items, (tryFiles l eff v q own items).Confined (Under (baseOf l eff))
+    (own guarded : NPath → Bool) :
+    ∀ items, (tryFiles l eff v q own guarded items).Confined (Under (baseOf l eff))
   | [] => by simp [tryFiles, Step.Confined]
   | [last] => by
     simp only [tryFiles]
@@ -113,7 +113,7 @@ theorem tryFiles_confined (l : Location) (eff : Settings) (v : Vars) (q : Option
     · simp [Step.Confined]
     · split <;> simp [Step.Confined]
   | item :: r :: rs => by
-    have ih := tryFiles_confined l eff v q own (r :: rs)
+    have ih := tryFiles_confined l eff v q own guarded (r :: rs)
     simp only [tryFiles]
     split
     · exact ih
@@ -122,6 +122,8 @@ theorem tryFiles_confined (l : Location) (eff : Settings) (v : Vars) (q : Option
       · exact ih
       · rename_i base segs ht
         obtain ⟨rfl, hs⟩ := fsTarget_ok l eff np _ _ (normalizeDecoded_safe _ _ hnorm) ht
+        split
+        · simp [Step.Confined]
         simp only [Step.Confined]
         refine ⟨⟨segs, hs, rfl⟩, ?_⟩
         intro res
@@ -161,7 +163,7 @@ theorem route_confined' (h : HttpConf) (sv : Server) (req : Request) (v : Vars) 
     · split
       · simp [Step.Confined]
       · split
-        · exact tryFiles_confined _ _ _ _ _ _
+        · exact tryFiles_confined _ _ _ _ _ _ _
         · exact serveStatic_confined _ _ _ _ hnp
 
 /-! ## Internal redirects -/
@@ -220,8 +222,8 @@ theorem serveStatic_redirects (l : Location) (eff : Settings) (np : NPath) (q : 
       split <;> simp [Step.RedirectsSafe, Action.RedirectSafe]
 
 theorem tryFiles_redirects (l : Location) (eff : Settings) (v : Vars) (q : Option Bytes)
-    (own : NPath → Bool) :
-    ∀ items, (tryFiles l eff v q own items).RedirectsSafe
+    (own guarded : NPath → Bool) :
+    ∀ items, (tryFiles l eff v q own guarded items).RedirectsSafe
   | [] => by simp [tryFiles, Step.RedirectsSafe, Action.RedirectSafe]
   | [last] => by
     simp only [tryFiles]
@@ -232,14 +234,16 @@ theorem tryFiles_redirects (l : Location) (eff : Settings) (v : Vars) (q : Optio
         simpa [Step.RedirectsSafe, Action.RedirectSafe] using internalTarget_safe _ np q' ht
       · simp [Step.RedirectsSafe, Action.RedirectSafe]
   | item :: r :: rs => by
-    have ih := tryFiles_redirects l eff v q own (r :: rs)
+    have ih := tryFiles_redirects l eff v q own guarded (r :: rs)
     simp only [tryFiles]
     split
     · exact ih
     · rename_i np hnorm
       split
       · exact ih
-      · simp only [Step.RedirectsSafe]
+      · split
+        · simpa [Step.RedirectsSafe, Action.RedirectSafe] using normalizeDecoded_safe _ _ hnorm
+        simp only [Step.RedirectsSafe]
         intro res
         split
         · split
@@ -274,7 +278,7 @@ theorem route_redirects' (h : HttpConf) (sv : Server) (req : Request) (v : Vars)
     · split
       · simp [Step.RedirectsSafe, Action.RedirectSafe]
       · split
-        · exact tryFiles_redirects _ _ _ _ _ _
+        · exact tryFiles_redirects _ _ _ _ _ _ _
         · exact serveStatic_redirects _ _ _ _ hnp
 
 /-! ## Which kinds of action a stat program can end in -/
@@ -312,7 +316,7 @@ theorem serveStatic_noProxy (l : Location) (eff : Settings) (np : NPath) (q : Op
     · simp only [Step.NoProxy]; intro r; split <;> simp [Step.NoProxy]
 
 theorem tryFiles_noProxy (l : Location) (eff : Settings) (v : Vars) (q : Option Bytes)
-    (own : NPath → Bool) : ∀ items, (tryFiles l eff v q own items).NoProxy
+    (own guarded : NPath → Bool) : ∀ items, (tryFiles l eff v q own guarded items).NoProxy
   | [] => by simp [tryFiles, Step.NoProxy]
   | [last] => by
     simp only [tryFiles]
@@ -320,13 +324,15 @@ theorem tryFiles_noProxy (l : Location) (eff : Settings) (v : Vars) (q : Option 
     · simp [Step.NoProxy]
     · split <;> simp [Step.NoProxy]
   | item :: r :: rs => by
-    have ih := tryFiles_noProxy l eff v q own (r :: rs)
+    have ih := tryFiles_noProxy l eff v q own guarded (r :: rs)
     simp only [tryFiles]
     split
     · exact ih
     · split
       · exact ih
-      · simp only [Step.NoProxy]
+      · split
+        · simp [Step.NoProxy]
+        simp only [Step.NoProxy]
         intro res
         split
         · split

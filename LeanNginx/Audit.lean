@@ -333,6 +333,9 @@ open LeanNginx.Spec
 /-- info: 'LeanNginx.Spec.vector_try_files_cross_location' depends on axioms: [propext, Classical.choice, Quot.sound] -/
 #guard_msgs (whitespace := lax) in #print axioms vector_try_files_cross_location
 
+/-- info: 'LeanNginx.Spec.tryFiles_crossLoc_noLeak' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs (whitespace := lax) in #print axioms tryFiles_crossLoc_noLeak
+
 /-- info: 'LeanNginx.Spec.route_proxy_target' depends on axioms: [propext, Classical.choice, Quot.sound] -/
 #guard_msgs (whitespace := lax) in #print axioms route_proxy_target
 
