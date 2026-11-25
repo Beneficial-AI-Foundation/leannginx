@@ -79,3 +79,36 @@ LEAN_EXPORT lean_obj_res lnginx_tcp_bind_reuseport(b_lean_obj_arg server, b_lean
         lean_mk_string("SO_REUSEPORT load balancing is only supported on Linux")));
 }
 #endif
+
+/* ---------------------------------------------------------------------------------------------
+   send_timeout: libuv (and so Std.Async) cannot cancel a pending write, and a client that stops
+   reading leaves it pending forever. `lnginx_tcp_abort` makes the kernel fail it instead: it
+   sets SO_LINGER {on, 0} (the eventual close sends RST and drops unsent data) and shuts the socket
+   down both ways. The socket then polls writable, libuv's next write attempt fails with EPIPE,
+   the write's promise resolves with an error and the connection task closes the socket as usual.
+   The handle itself is left to the runtime (closing it here would close it twice). */
+int uv_fileno(const void * handle, int * fd);
+int setsockopt(int fd, int level, int name, const void * value, unsigned int len);
+int shutdown(int fd, int how);
+#ifdef __linux__
+#define LNGINX_SOL_SOCKET_ 1
+#define LNGINX_SO_LINGER 13
+#else
+#define LNGINX_SOL_SOCKET_ 0xffff
+#define LNGINX_SO_LINGER 0x0080
+#endif
+typedef struct { int l_onoff; int l_linger; } lnginx_linger;
+
+/* LeanNginx.abortSocket (socket : @& Std.Internal.UV.TCP.Socket) : IO Unit */
+LEAN_EXPORT lean_obj_res lnginx_tcp_abort(b_lean_obj_arg sock) {
+    lnginx_tcp_socket_prefix * s = (lnginx_tcp_socket_prefix *)lean_get_external_data(sock);
+    lnginx_event_loop_lock(&lnginx_global_ev);
+    int fd = -1;
+    if (uv_fileno(s->m_uv_tcp, &fd) == 0 && fd >= 0) {
+        lnginx_linger l = { 1, 0 };
+        setsockopt(fd, LNGINX_SOL_SOCKET_, LNGINX_SO_LINGER, &l, sizeof l);
+        shutdown(fd, 2 /* SHUT_RDWR */);
+    }
+    lnginx_event_loop_unlock(&lnginx_global_ev);
+    return lean_io_result_mk_ok(lean_box(0));
+}

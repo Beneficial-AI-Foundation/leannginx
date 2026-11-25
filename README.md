@@ -135,7 +135,7 @@ toolchain, which lean-zip does not build with yet.
 
 ## What's proved
 
-All in [`LeanNginx/Spec.lean`](LeanNginx/Spec.lean): 100 theorems, each pinned by the axiom audit.
+All in [`LeanNginx/Spec.lean`](LeanNginx/Spec.lean): 108 theorems, each pinned by the axiom audit.
 They use only `propext`, `Classical.choice` and `Quot.sound` (no `sorry`, no `native_decide`),
 except `gzip_roundtrip`, which is lean-zip's theorem and also trusts the compiled checker that
 `bv_decide` uses.
@@ -172,7 +172,18 @@ except `gzip_roundtrip`, which is lean-zip's theorem and also trusts the compile
   (`try_files /q/$args.html` with `GET /?../admin/page`) therefore cannot serve a protected
   location's file: a hit that belongs to another location becomes an internal redirect, and that
   location's rules decide (nginx serves it, past `/admin/`'s `auth_basic`).
-- *Responses:* header names and values written to the wire contain no CR/LF
+- *Request framing:* the head ends at the first empty line of the buffer, the body starts right
+  after it and inside the buffer (`findHeadEnd_first`).
+- *Hosts and credentials:* the host a request is routed by contains host characters only
+  (`hostName_chars`); a Basic-auth user name never contains `:` (`basicCreds_user_no_colon`);
+  HTTP/1.0 without keep-alive and `Connection: close` end the connection (`keepAlive_cases`);
+  a 304 is sent only for a matching ETag or an exact `If-Modified-Since` (`notModified_iff`).
+- *Reverse proxy:* the upstream gets the path that was routed, decoded once and re-encoded with
+  only unreserved bytes, `/` and `%XX`, never a segment some servers read as `..` (`..;`, `\`)
+  (`route_proxy_target`). nginx forwards the client's raw path, so `/admin/..%2Fapi/x` (routed as
+  `/api/x`) can reach an upstream under `/admin/`.
+- *Responses:* a rendered head has exactly one line per field plus the status line and the empty
+  line, whatever the values (`renderHead_lines`); header names and values contain no CR/LF
   (`renderHead_values_safe`), autoindex text is HTML-escaped and every autoindex link is one
   segment with no `:` or `/`, so a file named `javascript:alert(1)` stays a file name
   (`autoindexHref_relative`), byte ranges lie inside the file
@@ -183,7 +194,9 @@ except `gzip_roundtrip`, which is lean-zip's theorem and also trusts the compile
 - *Basic auth:* only a user from the user file with a matching password passes
   (`basicOk_sound`), and a 401 comes before any file is looked at (`routeAuth_denied`). A password
   longer than 511 bytes never matches and is not hashed (`verifyCrypt_long_password`), which
-  bounds the work one request can ask for (`cryptWork_bounded`).
+  bounds the work one request can ask for (`cryptWork_bounded`). An unknown user name costs the
+  same hashing as a wrong password (`basicOk_eq_timed`, the `@[csimp]` behind the compiled check),
+  so response times do not reveal which users exist.
 
 **In LeanTLS** (`LeanTLS/Spec/Server.lean`, kernel-checked): the server accepts only TLS 1.3,
 ChaCha20-Poly1305, a signature scheme the client offered and a well-formed key share it sent;
@@ -206,13 +219,15 @@ client being refused, gzip and regex locations).
 
 The IO shell also has limits that the specs cannot state: the request head (and the TLS
 handshake) must arrive within 60 s in all, however slowly its bytes come (nginx's
-`client_header_timeout`), at most `worker_connections` connections are open, and on a
+`client_header_timeout`), a write that makes no progress for 60 s fails and closes the
+connection (nginx's `send_timeout`; `c/reuseport.c` shuts the socket down, since libuv cannot
+cancel a write), at most `worker_connections` connections are open, and on a
 case-insensitive file system (macOS, Windows, casefolded mounts) a file is found only if every
 name below `root`/`alias` is spelled exactly as on disk. The specs model the file system as a
 function of the path bytes; without that check `GET /ADMIN/x` would select `location /` and read
 the file under `location /admin/`.
 
-### Penetration test (25 November 2026)
+### Penetration tests (25 November 2026)
 
 A local server with password-protected locations, `try_files` (including the
 `/q/$args.html` pattern), `alias`, regex locations, autoindex, error pages, a secret file outside
@@ -229,6 +244,13 @@ Found and fixed: `try_files /q/$args.html` served another location's file past i
 location; slow clients kept connections open indefinitely (per-read timeouts only, and none at
 all inside a TLS record); no limit on connections; 32 parallel requests for a 10 MB HTML file
 with gzip took 1.8 GB of memory; autoindex linked a file named `javascript:…` as a script URL.
+
+Second round (proxy, timing, slow readers, pipelining, TLS record floods, 5,000 mutated requests):
+`proxy_pass` forwarded the raw path (`/admin/..%2Fapi/x`, `/api/..;/admin`); a wrong password
+took 15.6 ms for a real user and 0.3 ms for an unknown one; a client that stopped reading held
+its connection forever. All fixed (`route_proxy_target`, `basicOk_eq_timed`, the send timeout).
+Pipelining (100,000 requests in one connection) costs the same per request; 200,000
+ChangeCipherSpec records after a handshake and the mutated requests changed nothing.
 
 ```sh
 ./audit.sh            # regenerate LeanNginx/Audit.lean after changing specs
@@ -278,6 +300,8 @@ Where the time goes, and what was done about it:
   `log_format`.
 - gzip applies to static files up to 1 MiB; larger files, proxied responses and autoindex pages
   are sent uncompressed.
+- `proxy_pass` without a URI sends the normalised, re-encoded path instead of the client's raw
+  one (nginx), and paths with a `..;`/`.;` segment or a backslash get 400 there.
 - `try_files` deliberately differs from nginx when an entry's path belongs to another location:
   instead of serving that file under the current location, routing continues there (an internal
   redirect), so its access rules apply.

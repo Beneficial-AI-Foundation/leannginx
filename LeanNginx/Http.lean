@@ -166,14 +166,25 @@ def Request.keepAlive (r : Request) : Bool :=
   let has (tok : Bytes) := conn.any fun v => (splitOnByte 44 v).any (trimWS · == tok)
   if r.minor == 1 then !has b!"close" else has b!"keep-alive"
 
-/-- Where the head ends in a receive buffer: `(headLen, bodyStart)`.
-Accepts CRLFCRLF, LFLF, LFCRLF. -/
-def findHeadEnd (b : ByteArray) : Option (Nat × Nat) := Id.run do
-  let n := b.size
-  for i in [0:n] do
-    if b.get! i == 10 then
-      if i + 1 < n && b.get! (i + 1) == 10 then return some (i, i + 2)
-      if i + 2 < n && b.get! (i + 1) == 13 && b.get! (i + 2) == 10 then return some (i, i + 3)
-  return none
+/-- If a head ends at the line feed at `i` (followed by LF, or by CR LF), where the body starts. -/
+def headEndAt (b : ByteArray) (i : Nat) : Option Nat :=
+  if b.get! i == 10 then
+    if i + 1 < b.size && b.get! (i + 1) == 10 then some (i + 2)
+    else if i + 2 < b.size && b.get! (i + 1) == 13 && b.get! (i + 2) == 10 then some (i + 3)
+    else none
+  else none
+
+/-- The first `i ≥ start` where a head ends. -/
+def findHeadEndFrom (b : ByteArray) (i : Nat) : Option (Nat × Nat) :=
+  if i < b.size then
+    match headEndAt b i with
+    | some e => some (i, e)
+    | none => findHeadEndFrom b (i + 1)
+  else none
+termination_by b.size - i
+
+/-- Where the head ends in a receive buffer: `(headLen, bodyStart)`, at the first empty line
+(CRLFCRLF, LFLF or LFCRLF). Spec: `findHeadEnd_first`. -/
+def findHeadEnd (b : ByteArray) : Option (Nat × Nat) := findHeadEndFrom b 0
 
 end LeanNginx

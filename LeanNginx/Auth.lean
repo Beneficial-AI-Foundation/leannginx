@@ -173,6 +173,53 @@ def basicOk (users : List (Bytes × Bytes)) (authz : Option Bytes) : Bool :=
   | some (u, p) => users.any fun e => e.1 == u && verifyCrypt e.2 p
   | none => false
 
+/-- A stored hash no password matches: SHA-256-crypt output is 43 characters, this one is 1.
+`basicOkTimed` checks a password against it when the user name is unknown. -/
+def dummyCrypt : Bytes := b!"$5$lnginx.dummy$*"
+
+theorem b64From24_length (a b c : UInt8) (n : Nat) : (b64From24 a b c n).length = n := by
+  simp [b64From24]
+
+theorem cryptEncode256_length (c : ByteArray) : (cryptEncode256 c).length = 43 := by
+  simp [cryptEncode256, b64From24_length]
+
+theorem verifyCrypt_dummy (pw : Bytes) : verifyCrypt dummyCrypt pw = false := by
+  unfold verifyCrypt
+  split
+  · rfl
+  · have hp : parseCrypt5 dummyCrypt = some (5000, b!"lnginx.dummy", b!"*") := by decide +kernel
+    rw [hp]
+    simp only
+    apply beq_false_of_ne
+    intro h
+    have := congrArg List.length h
+    rw [cryptEncode256_length] at this
+    simp at this
+
+/-- `basicOk` as it runs: when no user has the name sent, the password is still hashed (against
+`dummyCrypt`), so a wrong password takes as long for an unknown name as for a known one and the
+answer time does not tell which user names exist. -/
+def basicOkTimed (users : List (Bytes × Bytes)) (authz : Option Bytes) : Bool :=
+  match authz.bind basicCreds with
+  | some (u, p) =>
+    if users.any (·.1 == u) then users.any fun e => e.1 == u && verifyCrypt e.2 p
+    else verifyCrypt dummyCrypt p
+  | none => false
+
+/-- The timed check decides exactly what `basicOk` decides; compiled code runs it. -/
+@[csimp] theorem basicOk_eq_timed : @basicOk = @basicOkTimed := by
+  funext users authz
+  unfold basicOk basicOkTimed
+  split
+  · rename_i u p _
+    by_cases hu : users.any (·.1 == u) = true
+    · simp [hu]
+    · simp only [hu, Bool.false_eq_true, ↓reduceIte, verifyCrypt_dummy]
+      simp only [List.any_eq_false, Bool.not_eq_true] at hu ⊢
+      intro e he
+      simp [hu e he]
+  · rfl
+
 /-- With `auth_basic` on, the request lacks valid credentials. `users path` reads a user file;
 a missing file has no users, so every request is refused. -/
 def authDenied (eff : Settings) (users : Bytes → List (Bytes × Bytes)) (authz : Option Bytes) : Bool :=

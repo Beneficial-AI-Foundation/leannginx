@@ -276,9 +276,13 @@ def route (h : HttpConf) (sv : Server) (req : Request) (v : Vars) (np : NPath) :
     match l.ret, l.proxy with
     | some r, _ => .done (retAction v r)
     | none, some up =>
+      -- The upstream gets the path that was routed, decoded once and normalised, re-encoded
+      -- strictly (nginx forwards the client's raw path, so `/admin/..%2Fapi/x` is routed as
+      -- `/api/x` and reaches an upstream that does not decode `%2F` as `/admin/…`).
+      if np.segs.any proxyAmbiguous then .done (.error 400) else
       let uri := match up.uri with
-        | some u => percentEncode (u ++ np.uri.drop l.uri.length)
-        | none => req.path
+        | some u => percentEncode u ++ percentEncodeStrict (np.uri.drop l.uri.length)
+        | none => percentEncodeStrict np.uri
       .done (.proxy up (withQuery uri req.query))
     | none, none =>
       if !(req.method == b!"GET" || req.method == b!"HEAD") then .done (.error 405)
