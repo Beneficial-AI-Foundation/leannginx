@@ -464,7 +464,10 @@ def elabLocation (d : Directive) : Elab Location := do
     else if n == b!"try_files" then
       needArgs c 2 64; noBlock c; l := { l with tryFiles := some c.args }
     else if n == b!"proxy_pass" then
-      needArgs c 1 1; noBlock c; let u ← liftM (parseUpstream c.args.head!); l := { l with proxy := some u }
+      needArgs c 1 1; noBlock c; let u ← liftM (parseUpstream c.args.head!)
+      if isRegex && u.uri.isSome then
+        throw "\"proxy_pass\" cannot have a URI part in a location given by a regular expression"
+      l := { l with proxy := some u }
     else if n == b!"location" then throw "nested locations are not supported by leannginx"
     else unknown c "location"
   if isRegex && l.alias.isSome then

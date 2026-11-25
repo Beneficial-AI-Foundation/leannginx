@@ -147,5 +147,8 @@ check "reject proxy_set_header" 1 "$(rejconf 'proxy_set_header X-Forwarded-For "
 check "reject user"            1 "$(printf 'user nginx;\nhttp{server{listen 127.0.0.1:%d;}}\n' "$PORT" > "$TMP/rej.conf"; "$BIN" -t -c "$TMP/rej.conf" >/dev/null 2>&1; echo $?)"
 check "reject add_header always" 1 "$(rejconf 'add_header X-Frame-Options DENY always;')"
 check "accept add_header (2-arg)" 0 "$(rejconf 'add_header X-Frame-Options DENY;')"
+check "HTTP/1.1 needs Host"    400 "$(raw 'GET http://a/ HTTP/1.1\r\n\r\n')"
+check "reject proxy URI in regex" 1 "$(printf 'http{server{listen 127.0.0.1:%d;location ~ /api {proxy_pass http://127.0.0.1:1/v2/;}}}\n' "$PORT" > "$TMP/rej.conf"; "$BIN" -t -c "$TMP/rej.conf" >/dev/null 2>&1; echo $?)"
+check "accept proxy URI in prefix" 0 "$(printf 'http{server{listen 127.0.0.1:%d;location /api/ {proxy_pass http://127.0.0.1:1/v2/;}}}\n' "$PORT" > "$TMP/rej.conf"; "$BIN" -t -c "$TMP/rej.conf" >/dev/null 2>&1; echo $?)"
 check "access log"         1 "$(grep -c '"GET /files/hello.txt HTTP/1.1" 200 21' "$TMP/access.log" | awk '{print ($1>0)}')"
 [ $fail = 0 ] && echo "all smoke checks passed" || { echo "some smoke checks FAILED"; exit 1; }

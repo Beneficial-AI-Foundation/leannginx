@@ -3,16 +3,18 @@ import LeanNginx.Uri
 # HTTP/1.x request heads (RFC 9112)
 
 `parseRequest` turns the bytes before the blank line into a `Request` or an HTTP status code
-to answer with (400, 411, 414, 501, 505). It is deliberately strict where laxness causes
+to answer with (400, 411, 414, 505). It is deliberately strict where laxness causes
 request smuggling or header injection:
 
 * field names must be tokens (so `Name :` and obs-folded lines are rejected),
 * field values contain no NUL, CR, LF or other controls except HTAB,
 * `Transfer-Encoding` is never accepted (411), so a body is framed only by `Content-Length`,
   and every `Content-Length` value must agree,
-* HTTP/1.1 needs exactly one valid `Host`.
+* HTTP/1.1 needs a `Host` field; it is taken from the absolute-form target or the `Host` header.
 
-The specs in `Spec.lean` state these for all inputs.
+The first three are stated for all inputs in `Spec.lean`; the Host rules are pinned by vectors
+(`vector_host_required`, `vector_bad_host`), and `hostName` strips a port and repairs a bracket
+rather than fully validating the `uri-host` grammar.
 -/
 namespace LeanNginx
 
@@ -118,7 +120,7 @@ def parseContentLength (hs : List (Bytes × Bytes)) : Except Nat Nat :=
 def parseHost (minor : Nat) (fromTarget : Option Bytes) (hs : List (Bytes × Bytes)) :
     Except Nat (Option Bytes) :=
   match headerVals hs b!"host" with
-  | [] => if minor == 1 && fromTarget.isNone then .error 400 else .ok fromTarget
+  | [] => if minor == 1 then .error 400 else .ok fromTarget  -- RFC 9112 §3.2: 1.1 MUST carry a Host field
   | [h] =>
     if !hostOk h then .error 400
     else .ok (fromTarget <|> some (hostName h))

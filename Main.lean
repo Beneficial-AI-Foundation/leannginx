@@ -467,9 +467,10 @@ def connectUpstream (up : Upstream) : Async TCP.Socket.Client := do
 def parseUpstreamHead (head : Bytes) : Option (Nat × List (Bytes × Bytes)) := do
   let line :: rest := headLines head | none
   let code ← parseNat? ((splitOnByte 32 line).getD 1 [])
+  if code < 100 || code > 599 then none   -- RFC 9112 §4: the status is three digits, 100..599
   let hs := rest.filterMap fun l =>
     match splitFirst 58 l with
-    | (n, some v) => some (n, trimWS v)
+    | (n, some v) => if isToken n then some (n, trimWS v) else none  -- drop empty/invalid field names
     | _ => none
   pure (code, hs)
 
@@ -503,7 +504,7 @@ def proxyRequest (env : Env) (c : Link) (req : Request) (body : ByteArray)
         let now ← nowSecs
         let hs := hs.filter fun (n, _) => !hiddenUpstream.contains (lowerB n)
         sendB c (renderHead code ((← baseHeadersIO env) ++ hs ++ [connHeader false]))
-        let n ← if head then pure 0 else do
+        let n ← if head || code == 204 || code == 304 then pure 0 else do
           if rest.size > 0 then c.send rest
           relay us c rest.size
         closeConn us

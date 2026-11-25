@@ -226,10 +226,8 @@ theorem count_lf_of_safe (l : Bytes) (h : ∀ c ∈ l, c ≠ 10) : l.count 10 = 
 theorem statusLine_lf (code : Nat) : (statusLine code).count 10 = 1 := by
   unfold statusLine
   simp only [List.count_append, decDigits_no_lf]
-  have hr : ((let r := reason code; if r.isEmpty then [] else 32 :: r) : Bytes).count 10 = 0 := by
-    simp only; split
-    · rfl
-    · simp [List.count_cons, reason_no_lf]
+  have hr : ((32 :: reason code) : Bytes).count 10 = 0 := by
+    simp [List.count_cons, reason_no_lf]
   rw [hr]; decide
 
 theorem renderField_lf (f : Bytes × Bytes) : (renderField f).count 10 = 1 := by

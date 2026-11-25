@@ -63,6 +63,9 @@ open LeanNginx.Spec
 /-- info: 'LeanNginx.Spec.vector_bad_host' depends on axioms: [propext, Classical.choice, Quot.sound] -/
 #guard_msgs (whitespace := lax) in #print axioms vector_bad_host
 
+/-- info: 'LeanNginx.Spec.vector_host_required' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs (whitespace := lax) in #print axioms vector_host_required
+
 /-- info: 'LeanNginx.Spec.vector_absolute_form' depends on axioms: [propext, Classical.choice, Quot.sound] -/
 #guard_msgs (whitespace := lax) in #print axioms vector_absolute_form
 
