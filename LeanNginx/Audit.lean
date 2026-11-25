@@ -123,7 +123,7 @@ open LeanNginx.Spec
 /-- info: 'LeanNginx.Spec.mem_prefixFilter' depends on axioms: [propext, Classical.choice, Quot.sound] -/
 #guard_msgs (whitespace := lax) in #print axioms mem_prefixFilter
 
-/-- info: 'LeanNginx.Spec.regexMatches_iff' depends on axioms: [propext] -/
+/-- info: 'LeanNginx.Spec.regexMatches_iff' depends on axioms: [propext, Quot.sound] -/
 #guard_msgs (whitespace := lax) in #print axioms regexMatches_iff
 
 /-- info: 'LeanNginx.Spec.selectLocation_sound' depends on axioms: [propext, Classical.choice, Quot.sound] -/
@@ -332,6 +332,9 @@ open LeanNginx.Spec
 
 /-- info: 'LeanNginx.Spec.vector_try_files_cross_location' depends on axioms: [propext, Classical.choice, Quot.sound] -/
 #guard_msgs (whitespace := lax) in #print axioms vector_try_files_cross_location
+
+/-- info: 'LeanNginx.Spec.tryFiles_crossLoc_noLeak' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs (whitespace := lax) in #print axioms tryFiles_crossLoc_noLeak
 
 /-- info: 'LeanNginx.Spec.route_proxy_target' depends on axioms: [propext, Classical.choice, Quot.sound] -/
 #guard_msgs (whitespace := lax) in #print axioms route_proxy_target

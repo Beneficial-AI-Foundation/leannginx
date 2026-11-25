@@ -66,6 +66,68 @@ theorem mkSeq_iff (a b : Re) (w : Bytes) : Matches (mkSeq a b) w ↔ Matches (.s
       rw [eps_inv ha]; simpa using hb
   · exact Iff.rfl
 
+theorem mem_insByKey (x : Re) : ∀ (l : List Re) (r : Re), r ∈ insByKey x l ↔ r = x ∨ r ∈ l
+  | [], r => by simp [insByKey]
+  | y :: ys, r => by
+    simp only [insByKey]
+    split
+    · rw [List.mem_cons]
+    · rw [List.mem_cons, mem_insByKey x ys r, List.mem_cons]
+      constructor
+      · rintro (h | h | h)
+        · exact Or.inr (Or.inl h)
+        · exact Or.inl h
+        · exact Or.inr (Or.inr h)
+      · rintro (h | h | h)
+        · exact Or.inr (Or.inl h)
+        · exact Or.inl h
+        · exact Or.inr (Or.inr h)
+
+theorem mem_sortByKey : ∀ (l : List Re) (r : Re), r ∈ sortByKey l ↔ r ∈ l
+  | [], r => by simp [sortByKey]
+  | x :: xs, r => by
+    simp only [sortByKey]
+    rw [mem_insByKey x (sortByKey xs) r, mem_sortByKey xs r, List.mem_cons]
+
+/-- Folding an alternative-list back preserves the language: it matches `w` iff some member does. -/
+theorem altOf_iff : ∀ (L : List Re) (w : Bytes), Matches (altOf L) w ↔ ∃ r ∈ L, Matches r w
+  | [], w => by
+    simp only [altOf]
+    exact ⟨fun h => (none_inv h).elim, fun ⟨_, hm, _⟩ => by simp at hm⟩
+  | [r], w => by simp [altOf]
+  | r :: s :: rs, w => by
+    have ih := altOf_iff (s :: rs) w
+    show Matches (.alt r (altOf (s :: rs))) w ↔ _
+    constructor
+    · intro h; rcases alt_inv h with h | h
+      · exact ⟨r, List.mem_cons_self, h⟩
+      · obtain ⟨r', hr', hm⟩ := ih.mp h; exact ⟨r', List.mem_cons_of_mem _ hr', hm⟩
+    · rintro ⟨r', hr', hm⟩
+      rcases List.mem_cons.mp hr' with rfl | hr'
+      · exact Matches.altL hm
+      · exact Matches.altR (ih.mpr ⟨r', hr', hm⟩)
+
+/-- Flattening an `alt` tree into its alternative-list preserves the language. -/
+theorem altList_iff (r : Re) (w : Bytes) : Matches r w ↔ ∃ r' ∈ r.altList, Matches r' w := by
+  induction r with
+  | alt a b iha ihb =>
+    simp only [Re.altList, List.mem_append]
+    constructor
+    · intro h; rcases alt_inv h with h | h
+      · obtain ⟨r', hr', hm⟩ := iha.mp h; exact ⟨r', Or.inl hr', hm⟩
+      · obtain ⟨r', hr', hm⟩ := ihb.mp h; exact ⟨r', Or.inr hr', hm⟩
+    · rintro ⟨r', hr' | hr', hm⟩
+      · exact Matches.altL (iha.mpr ⟨r', hr', hm⟩)
+      · exact Matches.altR (ihb.mpr ⟨r', hr', hm⟩)
+  | none => simp [Re.altList]
+  | eps => simp [Re.altList]
+  | cls c => simp [Re.altList]
+  | seq a b _ _ => simp [Re.altList]
+  | star a _ => simp [Re.altList]
+
+/-- **`mkAlt` keeps the language of `.alt`**, whatever normalisation it does (flatten, sort,
+de-duplicate). This is the only fact the derivative-matcher proof needs about `mkAlt`, so the
+canonicalisation that bounds derivative growth does not affect correctness. -/
 theorem mkAlt_iff (a b : Re) (w : Bytes) : Matches (mkAlt a b) w ↔ Matches (.alt a b) w := by
   unfold mkAlt
   split
@@ -79,13 +141,21 @@ theorem mkAlt_iff (a b : Re) (w : Bytes) : Matches (mkAlt a b) w ↔ Matches (.a
     · intro h; rcases alt_inv h with h | h
       · exact h
       · exact (none_inv h).elim
-  · split
-    · rename_i heq
-      subst heq
-      constructor
-      · intro h; exact Matches.altL h
-      · intro h; rcases alt_inv h with h | h <;> exact h
-    · exact Iff.rfl
+  · rw [altOf_iff]
+    have hmem : ∀ r, (r ∈ (sortByKey (a.altList ++ b.altList)).eraseDups)
+        ↔ (r ∈ a.altList ∨ r ∈ b.altList) := by
+      intro r
+      rw [List.mem_eraseDups, mem_sortByKey, List.mem_append]
+    constructor
+    · rintro ⟨r', hr', hm⟩
+      rcases (hmem r').mp hr' with hr' | hr'
+      · exact Matches.altL ((altList_iff a w).mpr ⟨r', hr', hm⟩)
+      · exact Matches.altR ((altList_iff b w).mpr ⟨r', hr', hm⟩)
+    · intro h; rcases alt_inv h with h | h
+      · obtain ⟨r', hr', hm⟩ := (altList_iff a w).mp h
+        exact ⟨r', (hmem r').mpr (Or.inl hr'), hm⟩
+      · obtain ⟨r', hr', hm⟩ := (altList_iff b w).mp h
+        exact ⟨r', (hmem r').mpr (Or.inr hr'), hm⟩
 
 /-! ## Nullability and derivatives -/
 

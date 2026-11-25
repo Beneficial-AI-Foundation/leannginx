@@ -4,11 +4,11 @@ import LeanNginx.Bytes
 
 A matcher based on Brzozowski derivatives, over bytes, with a proof that it decides the
 standard language semantics exactly (`matchB_iff` in `Proofs/Regex.lean`). It never backtracks.
-It does not, however, fully normalise derivatives (`mkAlt` only collapses identical operands, not
-associativity/commutativity), so an *ambiguous* operator-written regex such as `(a|aa)+b` can still
-grow the derivative super-linearly on a crafted input. Operator-chosen patterns without overlapping
-repetition (e.g. `\.(png|svg|ico)$`) stay constant-size; a bounded-state compilation would remove
-the pathological case and is the intended follow-up.
+`mkAlt` canonicalises every alternation it builds — flatten (associativity), sort (commutativity)
+and de-duplicate (idempotence) — so by Brzozowski's theorem the set of distinct derivatives of a
+fixed pattern is finite. The derivative term therefore stays bounded by a per-pattern constant no
+matter how long the input is, even for an *ambiguous* operator-written regex such as `(a|aa)+b`:
+work per byte does not grow with input length, so there is no catastrophic (ReDoS) blow-up.
 
 Supported syntax (the PCRE subset nginx configurations use in practice): literals, `.`, classes
 `[a-z0-9_]`, `[^…]`, `\d \w \s \D \W \S`, escapes, groups `(…)` and `(?:…)`, alternation `|`,
@@ -64,12 +64,54 @@ def mkSeq : Re → Re → Re
   | .eps, b => b
   | a, b => .seq a b
 
-/-- `alt` with the obvious simplifications. -/
+/-- The alternatives of a regex, flattening nested `alt`s: `a|b|c` -> `[a, b, c]`. -/
+def Re.altList : Re → List Re
+  | .alt a b => a.altList ++ b.altList
+  | r => [r]
+
+/-- Fold a list of alternatives back into a right-nested `alt` (`[]` -> `.none`). -/
+def altOf : List Re → Re
+  | [] => .none
+  | [r] => r
+  | r :: rs => .alt r (altOf rs)
+
+/-- A structural key used only to order alternatives, so that `mkAlt` can sort them into a
+canonical order. Any deterministic order works; this one is a prefix encoding of the tree. -/
+def Re.key : Re → List Nat
+  | .none => [0]
+  | .eps => [1]
+  | .cls c => 2 :: (if c.neg then 1 else 0) :: c.ranges.length :: c.ranges.flatMap (fun p => [p.1.toNat, p.2.toNat])
+  | .seq a b => 3 :: (a.key ++ b.key)
+  | .alt a b => 4 :: (a.key ++ b.key)
+  | .star a => 5 :: a.key
+
+/-- Lexicographic `≤` on `Nat` lists, as a `Bool` (the order `sortByKey` uses). -/
+def natListLe : List Nat → List Nat → Bool
+  | [], _ => true
+  | _ :: _, [] => false
+  | a :: as, b :: bs => if a < b then true else if b < a then false else natListLe as bs
+
+def Re.leB (a b : Re) : Bool := natListLe a.key b.key
+
+/-- Insertion of `x` into `l` by `Re.leB` (structural, so `decide` reduces it in the kernel). -/
+def insByKey (x : Re) : List Re → List Re
+  | [] => [x]
+  | y :: ys => if Re.leB x y then x :: y :: ys else y :: insByKey x ys
+
+/-- Insertion sort of alternatives by `Re.leB`. -/
+def sortByKey : List Re → List Re
+  | [] => []
+  | x :: xs => insByKey x (sortByKey xs)
+
+/-- `alt` that normalises: `.none` is dropped, and the set of alternatives is flattened, sorted
+and de-duplicated into a canonical form. Normalising (Brzozowski's A/C/I up to this order) bounds
+the number of distinct derivatives, so the derivative matcher cannot blow up (no ReDoS), while the
+language is unchanged (`mkAlt_iff`). -/
 def mkAlt (a b : Re) : Re :=
   match a, b with
   | .none, b => b
   | a, .none => a
-  | a, b => if a = b then a else .alt a b
+  | a, b => altOf ((sortByKey (a.altList ++ b.altList)).eraseDups)
 
 /-- Brzozowski derivative: the words `w` such that `x :: w` matches `r`. -/
 def Re.deriv (x : UInt8) : Re → Re

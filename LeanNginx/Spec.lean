@@ -624,7 +624,7 @@ theorem tryFiles_uri_serves_request_file (h : HttpConf) (sv : Server) (req : Req
         · subst hst; simp [Step.run] at hrun
         · simp only [htf] at hst
           subst hst
-          exact tryFiles_uri_file l _ v req.query _ np hs hroot hv hal o last items hitems
+          exact tryFiles_uri_file l _ v req.query _ _ np hs hroot hv hal o last items hitems
             path size mtime hrun
   obtain ⟨hdir, hp⟩ := key _ rfl hr
   rw [hp, normalizeDecoded_file_uri d np hd hdir]
@@ -1175,9 +1175,9 @@ request, and that location's access check passed for the credentials sent.
 So no entry of `try_files`, whatever variables it is built from (`try_files /q/$args.html` with
 `GET /?../admin/page`), can serve a file of a path that belongs to another location (say a
 protected `/admin/`) without that location's check: such a hit becomes an internal redirect, and
-the IO shell routes every hop through `routeAuth` again. This is about the file *served*; it does
-not state non-interference, so whether the protected file's existence leaks (it does, as a 1-bit
-oracle) is a separate, unproven question. -/
+the IO shell routes every hop through `routeAuth` again. Non-interference is proved too
+(`tryFiles_crossLoc_noLeak`): such a cross-location entry resolves to the same internal redirect
+whether or not the protected file exists, so its existence does not leak through this path. -/
 theorem routeAuth_file_authorized (h : HttpConf) (sv : Server) (req : Request) (v : Vars)
     (np : NPath) (users : Bytes → List (Bytes × Bytes)) (authz : Option Bytes)
     (o : Bytes → Option Kind) (p : Bytes) (size : Nat) (mtime : Int)
@@ -1229,6 +1229,7 @@ def tArgsVars (args : Bytes) : Vars :=
     remoteAddr := b!"-", serverPort := b!"80" }
 
 def tAllFiles : Bytes → Option Kind := fun _ => some (.file 1 0)
+def tNoFiles : Bytes → Option Kind := fun _ => none
 
 theorem vector_try_files_cross_location :
     ((routeAuth {} tArgsServer (tReq b!"GET" b!"/") (tArgsVars b!"../admin/page")
@@ -1237,8 +1238,27 @@ theorem vector_try_files_cross_location :
     ((routeAuth {} tArgsServer (tReq b!"GET" b!"/admin/page.html") (tArgsVars [])
         ⟨[b!"admin", b!"page.html"], false⟩ (fun _ => []) none).run tAllFiles = .error 401) ∧
     ((routeAuth {} tArgsServer (tReq b!"GET" b!"/") (tArgsVars b!"x")
-        ⟨[], true⟩ (fun _ => []) none).run tAllFiles = .internal ⟨[b!"q", b!"x.html"], false⟩ none) := by
+        ⟨[], true⟩ (fun _ => []) none).run tAllFiles = .internal ⟨[b!"q", b!"x.html"], false⟩ none) ∧
+    -- and the SAME internal redirect whether or not /admin/page.html exists: no existence oracle
+    ((routeAuth {} tArgsServer (tReq b!"GET" b!"/") (tArgsVars b!"../admin/page")
+        ⟨[], true⟩ (fun _ => []) none).run tNoFiles =
+      .internal ⟨[b!"admin", b!"page.html"], false⟩ none) := by
   decide +kernel
+
+/-- **No cross-location existence oracle (non-interference).** When a `try_files` entry's
+normalised path belongs to a *different* location, routing returns the same action under any two
+filesystems. So `GET /?../staff/notes` against `location = / { try_files /q/$args.html … }` cannot
+reveal whether the protected `/staff/notes` exists: it is an internal redirect either way (the next
+hop answers 401), never a 200 fallback that would mark the file absent. -/
+theorem tryFiles_crossLoc_noLeak (l : Location) (eff : Settings) (v : Vars) (q : Option Bytes)
+    (own guarded : NPath → Bool) (item r : Bytes) (rest : List Bytes) (np : NPath) (base : Bytes)
+    (segs : List Bytes) (hn : normalizeDecoded (expand v item) = some np)
+    (hf : fsTarget l eff np = some (base, segs)) (hg : guarded np = true)
+    (o o' : Bytes → Option Kind) :
+    (tryFiles l eff v q own guarded (item :: r :: rest)).run o =
+      (tryFiles l eff v q own guarded (item :: r :: rest)).run o' := by
+  rw [Proofs.tryFiles_crossLoc l eff v q own guarded item r rest np base segs hn hf hg o,
+      Proofs.tryFiles_crossLoc l eff v q own guarded item r rest np base segs hn hf hg o']
 
 /-! ## 9. Reverse proxy: the upstream gets the path that was routed -/
 
@@ -1274,7 +1294,7 @@ theorem route_proxy_target (h : HttpConf) (sv : Server) (req : Request) (v : Var
     · split at hr
       · simp [Step.run] at hr
       · split at hr
-        · exact absurd hr (Proofs.noProxy_run o _ (Proofs.tryFiles_noProxy _ _ _ _ _ _) up target)
+        · exact absurd hr (Proofs.noProxy_run o _ (Proofs.tryFiles_noProxy _ _ _ _ _ _ _) up target)
         · exact absurd hr (Proofs.noProxy_run o _ (Proofs.serveStatic_noProxy _ _ _ _) up target)
 
 /-- `location /api/ { proxy_pass http://up:8080; }` next to anything else. -/
