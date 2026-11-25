@@ -107,6 +107,9 @@ structure Watch where
   sock : TCP.Socket.Client
   /-- Monotonic milliseconds by which the pending read must finish; 0 = no read pending. -/
   deadline : IO.Ref Nat
+  /-- A hard limit for every read until it is reset (0 = none): the end of the TLS handshake or of
+  the request head, however many reads they take (LeanTLS reads a record in several). -/
+  limit : IO.Ref Nat
 
 abbrev Registry := Std.Mutex (Std.HashMap Nat Watch)
 
@@ -129,35 +132,76 @@ structure Env where
   idents : Array (Option LeanTLS.Server.Identity) := #[]
   /-- Every open socket with its read deadline. -/
   watches : Registry
+  /-- Open client connections (at most `worker_connections`). -/
+  active : IO.Ref Nat
   nextId : IO.Ref Nat
   /-- `(second, "Date" value)`, so the date is formatted once a second, not per response. -/
   dateCache : IO.Ref (Int × Bytes)
   fileCache : Std.Mutex FileCache
   /-- `auth_basic_user_file` contents, keyed by the path as written in the configuration. -/
   users : List (Bytes × List (Bytes × Bytes)) := []
+  /-- The `root`/`alias` directories that live on a case-insensitive file system (macOS, Windows,
+  casefolded Linux mounts); see `statPath`. -/
+  caseless : List Bytes := []
 
 def Env.http (e : Env) : HttpConf := e.cfg.http
 
 /-! ## File system -/
 
-def statPath (p : Bytes) : IO (Option Kind) := do
+/-- On a case-insensitive file system, `stat` finds `/srv/www/Admin/x` for the path
+`/srv/www/admin/x` (and on macOS also other Unicode spellings of a name). The routing specs model
+the file system as a function of the path bytes, and locations are matched on those bytes, so
+`GET /ADMIN/x` would select `location /` but read the file under `location /admin/`, past its
+`auth_basic`. Below a directory listed in `caseless`, a path therefore only counts as existing
+when every component below it is spelled exactly as on disk, as on a case-sensitive system. -/
+def exactNames (dir : System.FilePath) : List String → IO Bool
+  | [] => pure true
+  | c :: rest => do
+    let es ← try dir.readDir catch _ => pure #[]
+    if es.any (·.fileName == c) then exactNames (dir / c) rest else pure false
+
+def statPath (caseless : List Bytes) (p : Bytes) : IO (Option Kind) := do
   match toStrStrict? p with
   | none => pure none
   | some s =>
     try
       let m ← System.FilePath.metadata s
-      match m.type with
-      | .dir => pure (some .dir)
-      | .file => pure (some (.file m.byteSize.toNat m.modified.sec))
-      | _ => pure none
+      let exact ← match caseless.filter (fun b => isPrefixB (b ++ [47]) p) with
+        | [] => pure true
+        | bs =>
+          let b := (bs.foldl (fun x y => if x.length < y.length then y else x) [])
+          let rest := (splitOnByte 47 (p.drop (b.length + 1))).filter (!·.isEmpty)
+          match toStrStrict? b, rest.mapM toStrStrict? with
+          | some bS, some cs => exactNames bS cs
+          | _, _ => pure false
+      if !exact then pure none
+      else match m.type with
+        | .dir => pure (some .dir)
+        | .file => pure (some (.file m.byteSize.toNat m.modified.sec))
+        | _ => pure none
     catch _ => pure none
 
 /-- Interpret a stat program with real `stat` calls. -/
-def runStep : Step → IO Action
+def runStep (caseless : List Bytes) : Step → IO Action
   | .done a => pure a
   | .stat p k => do
-    let r ← statPath p
-    runStep (k r)
+    let r ← statPath caseless p
+    runStep caseless (k r)
+
+/-- Is `dir` on a case-insensitive file system? (The same directory is found with the case of
+every letter flipped.) -/
+def caselessDir (dir : Bytes) : IO Bool := do
+  let flip (c : UInt8) : UInt8 := if isUpper c then c + 32 else if isLowerA c then c - 32 else c
+  let f := dir.map flip
+  if f == dir then return false
+  match toStrStrict? dir, toStrStrict? f with
+  | some d, some fs =>
+    try
+      let a ← System.FilePath.metadata d
+      let b ← System.FilePath.metadata fs
+      return a.type == .dir && b.type == .dir && a.byteSize == b.byteSize && a.modified == b.modified
+    catch _ => return false
+  | _, _ => return false
 
 def listDir (p : Bytes) : IO (List Entry) := do
   let some s := toStrStrict? p | return []
@@ -181,7 +225,10 @@ This costs one libuv operation per read instead of four (a timer per read, or `S
 which on Lean 4.35 costs ~4x throughput). Timeouts are therefore accurate to about a second, as
 in nginx. After a timeout the caller closes the connection. -/
 def recvW (w : Watch) (ms : Nat) : Async (Option (Option ByteArray)) := do
-  w.deadline.set ((← IO.monoMsNow) + ms)
+  let now ← IO.monoMsNow
+  let lim ← w.limit.get
+  if lim != 0 && now ≥ lim then return none
+  w.deadline.set (if lim != 0 && lim < now + ms then lim else now + ms)
   let p ← w.sock.native.recv? 65536
   let r ← MonadAwait.await p.result?
   w.deadline.set 0
@@ -203,7 +250,7 @@ partial def sweeper (reg : Registry) : Async Unit := do
 /-- Register a socket with the watchdog for the duration of `k`. -/
 def withWatch (env : Env) (c : TCP.Socket.Client) (k : Watch → Async α) : Async α := do
   let id ← env.nextId.modifyGet fun n => (n, n + 1)
-  let w : Watch := { sock := c, deadline := ← IO.mkRef 0 }
+  let w : Watch := { sock := c, deadline := ← IO.mkRef 0, limit := ← IO.mkRef 0 }
   env.watches.atomically (modify (·.insert id w))
   try k w finally env.watches.atomically (modify (·.erase id))
 
@@ -215,18 +262,22 @@ structure Link where
   close : Async Unit
   /-- `http` or `https` -/
   scheme : Bytes
+  /-- Set the connection's hard read limit (monotonic ms, 0 = none); see `Watch.limit`. -/
+  limit : Nat → BaseIO Unit
 
 def tcpLink (w : Watch) : Link where
   recv := recvW w
   send := w.sock.send
   close := do try w.sock.shutdown catch _ => pure ()
   scheme := b!"http"
+  limit := w.limit.set
 
-def tlsLink (t : LeanTLS.Server.Conn) (c : TCP.Socket.Client) : Link where
+def tlsLink (t : LeanTLS.Server.Conn) (w : Watch) : Link where
   recv := t.read
   send := t.write
-  close := do t.close; try c.shutdown catch _ => pure ()
+  close := do t.close; try w.sock.shutdown catch _ => pure ()
   scheme := b!"https"
+  limit := w.limit.set
 
 def sendB (c : Link) (b : Bytes) : Async Unit := c.send (bytesOf b)
 
@@ -246,7 +297,10 @@ def dropLeadingNewlines (b : ByteArray) : ByteArray := Id.run do
   while i < b.size && (b.get! i == 10 || b.get! i == 13) do i := i + 1
   return if i == 0 then b else b.extract i b.size
 
-partial def readHead (c : Link) (buf : ByteArray) (ms : Nat) : Async HeadRes := do
+/-- Read a request head. `deadline` (monotonic ms) is for the whole head, as nginx's
+`client_header_timeout`: a client that sends a byte now and then cannot keep the connection
+open by doing so. -/
+partial def readHead (c : Link) (buf : ByteArray) (deadline : Nat) : Async HeadRes := do
   let buf := dropLeadingNewlines buf
   match findHeadEnd buf with
   | some (h, b) =>
@@ -254,10 +308,12 @@ partial def readHead (c : Link) (buf : ByteArray) (ms : Nat) : Async HeadRes := 
     pure (.ok (buf.extract 0 h) (buf.extract b buf.size))
   | none =>
     if buf.size > maxHead then return .tooLarge
-    match ← c.recv ms with
+    let now ← IO.monoMsNow
+    if now ≥ deadline then return (if buf.size == 0 then .closed else .timeout)
+    match ← c.recv (deadline - now) with
     | none => pure (if buf.size == 0 then .closed else .timeout)
     | some none => pure .closed
-    | some (some d) => readHead c (buf ++ d) ms
+    | some (some d) => readHead c (buf ++ d) deadline
 
 partial def readBody (c : Link) (buf : ByteArray) (n : Nat) (ms : Nat) :
     Async (Option ByteArray) := do
@@ -420,7 +476,7 @@ def proxyRequest (env : Env) (c : Link) (req : Request) (body : ByteArray)
     fwd.flatMap renderField ++ crlf
   try
     us.send (bytesOf reqHead ++ body)
-    match ← readHead us .empty 60000 with
+    match ← readHead us .empty ((← IO.monoMsNow) + 60000) with
     | .ok h rest =>
       match parseUpstreamHead h.toList with
       | none => closeConn us; sendErrorPage env c head false 502
@@ -489,7 +545,7 @@ def handle (env : Env) (port : Nat) (peer : String) (c : Link) (req : Request)
                          host, method, remoteAddr := ofStr peer, serverPort := decDigits port,
                          scheme := c.scheme }
     let addH (code : Nat) := if addHeaderCodes.contains code then eff.addHeaders.getD [] else []
-    let a ← runStep (routeAuth env.http sv { req with method, query } vars np
+    let a ← runStep env.caseless (routeAuth env.http sv { req with method, query } vars np
       (fun p => (env.users.lookup p).getD []) (header? req.headers b!"authorization"))
     match a with
     | .internal np' q =>
@@ -518,8 +574,8 @@ def handle (env : Env) (port : Nat) (peer : String) (c : Link) (req : Request)
                          headers := [(b!"Content-Type", mime), (b!"Content-Length", decDigits size)] }
         | none => fileResponse req mime size mtime
       let now ← nowSecs
-      -- gzip (lean-zip): whole files up to 16 MiB, 200 responses only
-      if fr.status == 200 && errCode.isNone && gzipApplies eff req mime size && size ≤ 16777216 then
+      -- gzip (lean-zip): whole files up to `gzipMaxSize`, 200 responses only
+      if fr.status == 200 && errCode.isNone && gzipApplies eff req mime size then
         let z ← gzipCached env pathS size mtime (eff.gzipLevel.getD 1)
         let hs := [(b!"Content-Type", mime), (b!"Last-Modified", httpDate mtime),
           (b!"ETag", weakEtag (etag size mtime)), (b!"Content-Encoding", b!"gzip"),
@@ -563,7 +619,11 @@ def firstLine (h : ByteArray) : Bytes := (headLines (h.extract 0 (min h.size 819
 partial def connLoop (env : Env) (port : Nat) (peer : String) (c : Link)
     (buf : ByteArray) (first : Bool) : Async Unit := do
   let ms := if first then 60000 else env.http.keepaliveTimeout * 1000
-  match ← readHead c buf ms with
+  let deadline := (← IO.monoMsNow) + ms
+  c.limit deadline
+  let res ← readHead c buf deadline
+  c.limit 0
+  match res with
   | .closed | .timeout => closeConn c
   | .tooLarge =>
     let o ← sendErrorPage env c false false 431
@@ -618,8 +678,10 @@ def serveConn (env : Env) (port : Nat) (ssl : Bool) (c : TCP.Socket.Client) : As
     return
   let tr : LeanTLS.Server.Transport := { recv := recvW w, send := c.send }
   try
+    -- the whole handshake within 60 s, however slowly its records arrive
+    w.limit.set ((← IO.monoMsNow) + 60000)
     match ← LeanTLS.Server.accept tr (pickIdentity env port) 60000 with
-    | .tls t => connLoop env port peer (tlsLink t c) .empty true
+    | .tls t => w.limit.set 0; connLoop env port peer (tlsLink t w) .empty true
     | .plain _ =>
       let o ← sendSimple env plain false false 400 b!"text/html" (plainOnTlsPage env.http.serverTokens) []
       accessLog env peer [] none o
@@ -660,7 +722,16 @@ def bindListen (reusePort : Bool) (l : Listen) : IO Bound := do
 
 partial def acceptLoop (env : Env) (b : Bound) : Async Unit := do
   let c ← try (some <$> b.sock.accept) catch e => do eprintln s!"accept() failed ({e})"; pure none
-  if let some c := c then background (serveConn env b.port b.ssl c)
+  if let some c := c then
+    let n ← env.active.modifyGet fun n => (n, n + 1)
+    if n ≥ env.cfg.workerConnections then
+      env.active.modify (· - 1)
+      eprintln s!"{env.cfg.workerConnections} worker_connections are not enough"
+      try c.shutdown catch _ => pure ()
+    else
+      background do
+        try serveConn env b.port b.ssl c
+        finally env.active.modify (· - 1)
   acceptLoop env b
 
 def usage : String :=
@@ -781,7 +852,15 @@ def main (args : List String) : IO UInt32 := do
     let f := toStr (resolveIn confDir p)
     try users := (p, parseUsers (ofStr (← IO.FS.readFile f))) :: users
     catch e => eprintln s!"[warn] cannot read auth_basic_user_file \"{f}\" ({e}): access is refused"
-  let env : Env := { cfg, log, idents, users, watches := ← Std.Mutex.new {}, nextId := ← IO.mkRef 0,
+  -- directories that `root`/`alias` serve from and that sit on a case-insensitive file system
+  let dirs := (cfg.http.s.root.toList ++ cfg.http.servers.flatMap fun sv =>
+    sv.s.root.toList ++ sv.locations.flatMap fun l => l.s.root.toList ++ l.alias.toList).map dropTrailingSlash
+  let mut caseless := []
+  for d in dirs.eraseDups do
+    if ← caselessDir d then caseless := d :: caseless
+  unless caseless.isEmpty || quiet do
+    IO.eprintln s!"  case-insensitive file system under {caseless.map toStr}: file names must match exactly"
+  let env : Env := { cfg, log, idents, users, caseless, watches := ← Std.Mutex.new {}, active := ← IO.mkRef 0, nextId := ← IO.mkRef 0,
                      dateCache := ← IO.mkRef (0, []), fileCache := ← Std.Mutex.new {} }
   -- listeners: one socket per distinct address:port (TLS if any `listen` on it says `ssl`)
   let listens := cfg.http.servers.flatMap (·.listens)

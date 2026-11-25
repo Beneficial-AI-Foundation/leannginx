@@ -151,7 +151,7 @@ structure Settings where
   authBasic : Option (Option Bytes) := none
   /-- `auth_basic_user_file`, relative to the configuration directory. -/
   authUserFile : Option Bytes := none
-  deriving Repr, Inhabited
+  deriving Repr, Inhabited, DecidableEq
 
 def Settings.merge (child parent : Settings) : Settings where
   root := child.root <|> parent.root
@@ -179,7 +179,7 @@ structure Location where
   ret : Option (Nat × Option Bytes) := none
   tryFiles : Option (List Bytes) := none
   proxy : Option Upstream := none
-  deriving Repr, Inhabited
+  deriving Repr, Inhabited, DecidableEq
 
 structure Listen where
   /-- `none` = all addresses. -/
@@ -216,6 +216,9 @@ structure Config where
   errorLog : Option Bytes := none
   /-- `worker_processes`: `some n` processes, `none` = `auto` (one per CPU core). -/
   workers : Option Nat := some 1
+  /-- `worker_connections` (in `events`): open client connections at most, per process. Further
+  connections are closed at once (nginx: "worker_connections are not enough"). -/
+  workerConnections : Nat := 512
   deriving Repr, Inhabited
 
 /-! ### Argument parsers -/
@@ -527,6 +530,14 @@ where
           | some n => if n ≥ 1 then cfg := { cfg with workers := some n }
                       else throw "invalid value \"0\" in \"worker_processes\" directive"
           | none => throw s!"invalid value \"{toStr a}\" in \"worker_processes\" directive"
+      else if d.name == b!"events" && d.block.isSome then
+        for e in d.block.getD [] do
+          if e.name == b!"worker_connections" then
+            needArgs e 1 1; noBlock e
+            match parseNat? e.args.head! with
+            | some n => if n ≥ 1 then cfg := { cfg with workerConnections := n }
+                        else throw "invalid value \"0\" in \"worker_connections\" directive"
+            | none => throw s!"invalid value \"{toStr e.args.head!}\" in \"worker_connections\" directive"
       else if ← elabIgnored d then continue
       else unknown d "main"
     unless seenHttp do throw "no \"http\" block in the configuration"

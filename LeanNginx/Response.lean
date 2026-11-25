@@ -234,15 +234,23 @@ def acceptsGzip (hs : List (Bytes × Bytes)) : Bool :=
 /-- The MIME type without parameters, lower case. -/
 def mimeBase (m : Bytes) : Bytes := lowerB (trimWS (splitFirst 59 m).1)
 
+/-- The largest file compressed on the fly, in bytes (1 MiB). Compression holds the whole file
+and lean-zip's working state in memory, about five times the file's size, so each request for a
+large compressible file costs that much; without a limit, a few dozen parallel requests for a
+10 MB HTML file take gigabytes. Larger files are sent uncompressed. (The same size is the
+small-file cache's limit, so every compressed file is also cached and compressed only once.) -/
+def gzipMaxSize : Nat := 1048576
+
 /-- nginx's rule for compressing a response: `gzip on`, the client accepts gzip, the type is
 `text/html` or listed in `gzip_types` (or `gzip_types *`), the body is at least
-`gzip_min_length` bytes (default 20), and no byte range was asked for. -/
+`gzip_min_length` bytes (default 20), and no byte range was asked for. Unlike nginx, which
+compresses as it streams, files larger than `gzipMaxSize` are not compressed. -/
 def gzipApplies (eff : Settings) (req : Request) (mime : Bytes) (size : Nat) : Bool :=
   let types := eff.gzipTypes.getD []
   let m := mimeBase mime
   eff.gzip.getD false && acceptsGzip req.headers &&
     (m == b!"text/html" || types.contains m || types.contains b!"*") &&
-    size ≥ eff.gzipMinLength.getD 20 &&
+    size ≥ eff.gzipMinLength.getD 20 && size ≤ gzipMaxSize &&
     (header? req.headers b!"range").isNone
 
 /-- Weak ETag for a compressed representation (as nginx does). -/
@@ -263,6 +271,9 @@ def padTo (n : Nat) (b : Bytes) : Bytes := b ++ List.replicate (n - b.length) 32
 def entryLe (a b : Entry) : Bool :=
   if a.isDir != b.isDir then a.isDir else decide (a.name.toArray ≤ b.name.toArray)
 
+/-- The link to a listed entry: its name as one encoded segment (`/` added for a directory). -/
+def autoindexHref (e : Entry) : Bytes := percentEncodeSeg e.name ++ (if e.isDir then [47] else [])
+
 /-- nginx-style `Index of /dir/` page. Names are URL-encoded in links and HTML-escaped as text. -/
 def autoindexPage (uri : Bytes) (es : List Entry) : Bytes :=
   let es := (es.filter fun e => e.name.head? != some 46).mergeSort entryLe
@@ -270,7 +281,7 @@ def autoindexPage (uri : Bytes) (es : List Entry) : Bytes :=
   let row (e : Entry) : Bytes :=
     let n := if e.isDir then e.name ++ [47] else e.name
     let shown := if n.length > 50 then n.take 47 ++ b!"..>" else n
-    b!"<a href=\"" ++ percentEncode n ++ b!"\">" ++ htmlEscape shown ++ b!"</a>" ++
+    b!"<a href=\"" ++ autoindexHref e ++ b!"\">" ++ htmlEscape shown ++ b!"</a>" ++
       List.replicate (51 - shown.length) 32 ++ listingDate e.mtime ++
       (let sz := if e.isDir then b!"-" else decDigits e.size; List.replicate (20 - min 20 sz.length) 32 ++ sz) ++ crlf
   b!"<html>\r\n<head><title>" ++ title ++ b!"</title></head>\r\n<body>\r\n<h1>" ++ title ++

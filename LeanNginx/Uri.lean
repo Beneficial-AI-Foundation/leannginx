@@ -89,6 +89,19 @@ def percentEncode : Bytes → Bytes
     if pathSafeByte c then c :: percentEncode rest
     else 37 :: hexUpper (c.toNat / 16) :: hexUpper (c.toNat % 16) :: percentEncode rest
 
+/-- Bytes that may appear unescaped in one path segment of a relative link: `pathSafeByte`
+without `/` and `:`. -/
+def segSafeByte (c : UInt8) : Bool := pathSafeByte c && c != 47 && c != 58
+
+/-- Percent-encode a file name for use as a relative link. With no `/` and no `:` the result is a
+relative-path reference (RFC 3986 §4.2): a name such as `javascript:alert(1)` or `//evil` stays a
+file name in the current directory, never a scheme or a host. -/
+def percentEncodeSeg : Bytes → Bytes
+  | [] => []
+  | c :: rest =>
+    if segSafeByte c then c :: percentEncodeSeg rest
+    else 37 :: hexUpper (c.toNat / 16) :: hexUpper (c.toNat % 16) :: percentEncodeSeg rest
+
 /-- Split a request target into path and query (`?`). -/
 def splitTarget (t : Bytes) : Bytes × Option Bytes := splitFirst 63 t
 

@@ -222,8 +222,17 @@ def serveStatic (l : Location) (eff : Settings) (np : NPath) (query : Option Byt
 Entries are paths, not request targets: after variable expansion they are used as they stand
 (`normalizeDecoded`), never percent-decoded. `$uri` therefore names exactly the path the
 location was selected on (`tryFiles_uri_serves_request_file` in `Spec.lean`). A fallback URI
-that does not normalise is a 500. -/
-def tryFiles (l : Location) (eff : Settings) (v : Vars) (query : Option Bytes) : List Bytes → Step
+that does not normalise is a 500.
+
+`own np` says whether the path `np` belongs to this location (selects it). A file or directory
+found for an entry that belongs to another location is not served here: routing continues with an
+internal redirect to it, so that location's rules, `auth_basic` among them, decide. nginx would
+serve it under the current location; with an entry built from client input
+(`try_files /q/$args.html`, `GET /?../admin/x`) that serves another location's files without its
+access check. Here a file is only ever served for a path of the location whose access check passed
+(`routeAuth_file_authorized`). -/
+def tryFiles (l : Location) (eff : Settings) (v : Vars) (query : Option Bytes)
+    (own : NPath → Bool) : List Bytes → Step
   | [] => .done (.error 404)
   | [last] =>
     let e := expand v last
@@ -234,18 +243,22 @@ def tryFiles (l : Location) (eff : Settings) (v : Vars) (query : Option Bytes) :
   | item :: rest =>
     let e := expand v item
     match normalizeDecoded e with
-    | none => tryFiles l eff v query rest
+    | none => tryFiles l eff v query own rest
     | some np =>
       match fsTarget l eff np with
-      | none => tryFiles l eff v query rest
+      | none => tryFiles l eff v query own rest
       | some (base, segs) =>
         .stat (base ++ joinSegs segs) fun
           | some (.file size mtime) =>
-            if np.dir then tryFiles l eff v query rest else .done (.file (base ++ joinSegs segs) size mtime)
+            if np.dir then tryFiles l eff v query own rest
+            else if own np then .done (.file (base ++ joinSegs segs) size mtime)
+            else .done (.internal np none)
           | some .dir =>
-            if np.dir then serveDir eff np base segs (eff.index.getD [b!"index.html"])
-            else tryFiles l eff v query rest
-          | none => tryFiles l eff v query rest
+            if np.dir then
+              if own np then serveDir eff np base segs (eff.index.getD [b!"index.html"])
+              else .done (.internal np none)
+            else tryFiles l eff v query own rest
+          | none => tryFiles l eff v query own rest
 
 /-- The implicit location used when no `location` matches. -/
 def defaultLocation : Location := { kind := .pre, uri := b!"/" }
@@ -270,7 +283,8 @@ def route (h : HttpConf) (sv : Server) (req : Request) (v : Vars) (np : NPath) :
     | none, none =>
       if !(req.method == b!"GET" || req.method == b!"HEAD") then .done (.error 405)
       else match l.tryFiles with
-        | some items => tryFiles l eff v req.query items
+        | some items =>
+          tryFiles l eff v req.query (fun p => (selectLocation sv.locations p.uri).getD defaultLocation == l) items
         | none => serveStatic l eff np req.query
 
 end LeanNginx

@@ -103,8 +103,9 @@ theorem serveStatic_confined (l : Location) (eff : Settings) (np : NPath) (q : O
       split <;> simp [Step.Confined]
       exact ⟨segs, hs, rfl⟩
 
-theorem tryFiles_confined (l : Location) (eff : Settings) (v : Vars) (q : Option Bytes) :
-    ∀ items, (tryFiles l eff v q items).Confined (Under (baseOf l eff))
+theorem tryFiles_confined (l : Location) (eff : Settings) (v : Vars) (q : Option Bytes)
+    (own : NPath → Bool) :
+    ∀ items, (tryFiles l eff v q own items).Confined (Under (baseOf l eff))
   | [] => by simp [tryFiles, Step.Confined]
   | [last] => by
     simp only [tryFiles]
@@ -112,7 +113,7 @@ theorem tryFiles_confined (l : Location) (eff : Settings) (v : Vars) (q : Option
     · simp [Step.Confined]
     · split <;> simp [Step.Confined]
   | item :: r :: rs => by
-    have ih := tryFiles_confined l eff v q (r :: rs)
+    have ih := tryFiles_confined l eff v q own (r :: rs)
     simp only [tryFiles]
     split
     · exact ih
@@ -127,9 +128,13 @@ theorem tryFiles_confined (l : Location) (eff : Settings) (v : Vars) (q : Option
         split
         · split
           · exact ih
-          · simp [Step.Confined]; exact ⟨segs, hs, rfl⟩
+          · split
+            · simp [Step.Confined]; exact ⟨segs, hs, rfl⟩
+            · simp [Step.Confined]
         · split
-          · exact serveDir_confined eff np _ segs hs _
+          · split
+            · exact serveDir_confined eff np _ segs hs _
+            · simp [Step.Confined]
           · exact ih
         · exact ih
 
@@ -156,7 +161,7 @@ theorem route_confined' (h : HttpConf) (sv : Server) (req : Request) (v : Vars) 
     · split
       · simp [Step.Confined]
       · split
-        · exact tryFiles_confined _ _ _ _ _
+        · exact tryFiles_confined _ _ _ _ _ _
         · exact serveStatic_confined _ _ _ _ hnp
 
 /-! ## Internal redirects -/
@@ -214,8 +219,9 @@ theorem serveStatic_redirects (l : Location) (eff : Settings) (np : NPath) (q : 
       intro r
       split <;> simp [Step.RedirectsSafe, Action.RedirectSafe]
 
-theorem tryFiles_redirects (l : Location) (eff : Settings) (v : Vars) (q : Option Bytes) :
-    ∀ items, (tryFiles l eff v q items).RedirectsSafe
+theorem tryFiles_redirects (l : Location) (eff : Settings) (v : Vars) (q : Option Bytes)
+    (own : NPath → Bool) :
+    ∀ items, (tryFiles l eff v q own items).RedirectsSafe
   | [] => by simp [tryFiles, Step.RedirectsSafe, Action.RedirectSafe]
   | [last] => by
     simp only [tryFiles]
@@ -226,7 +232,7 @@ theorem tryFiles_redirects (l : Location) (eff : Settings) (v : Vars) (q : Optio
         simpa [Step.RedirectsSafe, Action.RedirectSafe] using internalTarget_safe _ np q' ht
       · simp [Step.RedirectsSafe, Action.RedirectSafe]
   | item :: r :: rs => by
-    have ih := tryFiles_redirects l eff v q (r :: rs)
+    have ih := tryFiles_redirects l eff v q own (r :: rs)
     simp only [tryFiles]
     split
     · exact ih
@@ -238,9 +244,13 @@ theorem tryFiles_redirects (l : Location) (eff : Settings) (v : Vars) (q : Optio
         split
         · split
           · exact ih
-          · simp [Step.RedirectsSafe, Action.RedirectSafe]
+          · split
+            · simp [Step.RedirectsSafe, Action.RedirectSafe]
+            · simpa [Step.RedirectsSafe, Action.RedirectSafe] using normalizeDecoded_safe _ _ hnorm
         · split
-          · exact serveDir_redirects eff np _ _ (normalizeDecoded_safe _ _ hnorm) _
+          · split
+            · exact serveDir_redirects eff np _ _ (normalizeDecoded_safe _ _ hnorm) _
+            · simpa [Step.RedirectsSafe, Action.RedirectSafe] using normalizeDecoded_safe _ _ hnorm
           · exact ih
         · exact ih
 
@@ -264,7 +274,7 @@ theorem route_redirects' (h : HttpConf) (sv : Server) (req : Request) (v : Vars)
     · split
       · simp [Step.RedirectsSafe, Action.RedirectSafe]
       · split
-        · exact tryFiles_redirects _ _ _ _ _
+        · exact tryFiles_redirects _ _ _ _ _ _
         · exact serveStatic_redirects _ _ _ _ hnp
 
 /-! ## Location selection -/

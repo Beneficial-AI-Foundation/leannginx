@@ -44,8 +44,8 @@ theorem serveDir_autoindex (eff : Settings) (np : NPath) (base : Bytes) (segs : 
     · exact serveDir_autoindex eff np base segs o rest p h
 
 theorem tryFiles_autoindex (l : Location) (eff : Settings) (v : Vars) (q : Option Bytes)
-    (o : Bytes → Option Kind) :
-    ∀ items p, (tryFiles l eff v q items).run o = .autoindex p → eff.autoindex = some true
+    (own : NPath → Bool) (o : Bytes → Option Kind) :
+    ∀ items p, (tryFiles l eff v q own items).run o = .autoindex p → eff.autoindex = some true
   | [], p, h => by simp [tryFiles, Step.run] at h
   | [last], p, h => by
     simp only [tryFiles] at h
@@ -53,7 +53,7 @@ theorem tryFiles_autoindex (l : Location) (eff : Settings) (v : Vars) (q : Optio
     · simp [Step.run] at h
     · split at h <;> simp [Step.run] at h
   | item :: r :: rs, p, h => by
-    have ih := tryFiles_autoindex l eff v q o (r :: rs) p
+    have ih := tryFiles_autoindex l eff v q own o (r :: rs) p
     simp only [tryFiles] at h
     split at h
     · exact ih h
@@ -67,9 +67,11 @@ theorem tryFiles_autoindex (l : Location) (eff : Settings) (v : Vars) (q : Optio
         · exact ih h
         · split at h
           · exact ih h
-          · simp [Step.run] at h
+          · split at h <;> simp [Step.run] at h
         · split at h
-          · exact serveDir_autoindex eff _ _ _ o _ p h
+          · split at h
+            · exact serveDir_autoindex eff _ _ _ o _ p h
+            · simp [Step.run] at h
           · exact ih h
 
 theorem serveStatic_autoindex (l : Location) (eff : Settings) (np : NPath) (q : Option Bytes)
@@ -110,7 +112,7 @@ theorem route_autoindex' (h : HttpConf) (sv : Server) (req : Request) (v : Vars)
     · split at hr
       · simp [Step.run] at hr
       · split at hr
-        · exact tryFiles_autoindex _ _ _ _ o _ p hr
+        · exact tryFiles_autoindex _ _ _ _ _ o _ p hr
         · exact serveStatic_autoindex _ _ _ _ o p hr
 
 /-! ## Which file is served -/
@@ -392,10 +394,10 @@ theorem retAction_ne_file (v : Vars) (r : Nat × Option Bytes) (p : Bytes) (size
 /-- `try_files` whose entries before the fallback are all `$uri` or `$uri/`, in a location with a
 `root`: the only file it can serve is `root` followed by the request's own segments. -/
 theorem tryFiles_uri_file (l : Location) (eff : Settings) (v : Vars) (q : Option Bytes)
-    (np : NPath) (hs : ∀ s ∈ np.segs, Safe s) (hroot : np.segs = [] → np.dir = true)
+    (own : NPath → Bool) (np : NPath) (hs : ∀ s ∈ np.segs, Safe s) (hroot : np.segs = [] → np.dir = true)
     (hv : v.uri = np.uri) (hal : l.alias = none) (o : Bytes → Option Kind) (last : Bytes) :
     ∀ (items : List Bytes), (∀ i ∈ items, i = b!"$uri" ∨ i = b!"$uri/") →
-    ∀ p size mtime, (tryFiles l eff v q (items ++ [last])).run o = .file p size mtime →
+    ∀ p size mtime, (tryFiles l eff v q own (items ++ [last])).run o = .file p size mtime →
       np.dir = false ∧ p = dropTrailingSlash (eff.root.getD defaultRoot) ++ joinSegs np.segs := by
   intro items
   induction items with
@@ -425,10 +427,14 @@ theorem tryFiles_uri_file (l : Location) (eff : Settings) (v : Vars) (q : Option
       · split at h
         · exact ih' h
         · rename_i hd
-          simp only [Step.run, Action.file.injEq] at h
-          exact ⟨by simpa using hd, h.1.symm⟩
+          split at h
+          · simp only [Step.run, Action.file.injEq] at h
+            exact ⟨by simpa using hd, h.1.symm⟩
+          · simp [Step.run] at h
       · split at h
-        · exact absurd h (serveDir_ne_file _ _ _ _ o _ p size mtime)
+        · split at h
+          · exact absurd h (serveDir_ne_file _ _ _ _ o _ p size mtime)
+          · simp [Step.run] at h
         · exact ih' h
     · simp only [expand_uri_slash, hv, normalizeDecoded_uri_slash np hs, fsTarget, hal, Step.run] at h
       revert h
@@ -437,7 +443,94 @@ theorem tryFiles_uri_file (l : Location) (eff : Settings) (v : Vars) (q : Option
       rcases res with _ | ⟨_, _⟩ | _ <;> simp only [↓reduceIte] at h
       · exact ih' h
       · exact ih' h
-      · exact absurd h (serveDir_ne_file _ _ _ _ o _ p size mtime)
+      · split at h
+        · exact absurd h (serveDir_ne_file _ _ _ _ o _ p size mtime)
+        · simp [Step.run] at h
+
+/-! ## A served file belongs to the location that was selected -/
+
+/-- `p` is the file the path `np` names in location `l`. -/
+def FileOf (l : Location) (eff : Settings) (np : NPath) (p : Bytes) : Prop :=
+  ∃ base segs, fsTarget l eff np = some (base, segs) ∧ p = base ++ joinSegs segs
+
+/-- A file served by `try_files` is the file of an entry path that `own` accepts. -/
+theorem tryFiles_file_owned (l : Location) (eff : Settings) (v : Vars) (q : Option Bytes)
+    (own : NPath → Bool) (o : Bytes → Option Kind) :
+    ∀ items p size mtime, (tryFiles l eff v q own items).run o = .file p size mtime →
+      ∃ np', own np' = true ∧ FileOf l eff np' p
+  | [], p, size, mtime, h => by simp [tryFiles, Step.run] at h
+  | [last], p, size, mtime, h => by
+    simp only [tryFiles] at h
+    split at h
+    · simp [Step.run] at h
+    · split at h <;> simp [Step.run] at h
+  | item :: r :: rs, p, size, mtime, h => by
+    have ih := tryFiles_file_owned l eff v q own o (r :: rs) p size mtime
+    simp only [tryFiles] at h
+    split at h
+    · exact ih h
+    · rename_i np _
+      split at h
+      · exact ih h
+      · rename_i base segs ht
+        simp only [Step.run] at h
+        revert h
+        generalize o _ = res
+        intro h
+        rcases res with _ | ⟨_, _⟩ | _ <;> simp only at h
+        · exact ih h
+        · split at h
+          · exact ih h
+          · split at h
+            · rename_i hown
+              simp only [Step.run, Action.file.injEq] at h
+              exact ⟨np, hown, base, segs, ht, h.1.symm⟩
+            · simp [Step.run] at h
+        · split at h
+          · split at h
+            · exact absurd h (serveDir_ne_file _ _ _ _ o _ p size mtime)
+            · simp [Step.run] at h
+          · exact ih h
+
+/-- Without `try_files`, the file served is the request path's own. -/
+theorem serveStatic_file_own (l : Location) (eff : Settings) (np : NPath) (q : Option Bytes)
+    (o : Bytes → Option Kind) (p : Bytes) (size : Nat) (mtime : Int)
+    (h : (serveStatic l eff np q).run o = .file p size mtime) : FileOf l eff np p := by
+  unfold serveStatic at h
+  split at h
+  · simp [Step.run] at h
+  · rename_i base segs ht
+    split at h
+    · exact absurd h (serveDir_ne_file _ _ _ _ o _ p size mtime)
+    · simp only [Step.run] at h
+      revert h
+      generalize o _ = res
+      intro h
+      rcases res with _ | ⟨_, _⟩ | _ <;> simp [Step.run] at h
+      exact ⟨base, segs, ht, h.1.symm⟩
+
+/-- Whatever `route` serves is the file, in the selected location, of a path that selects that
+same location. -/
+theorem route_file_own (h : HttpConf) (sv : Server) (req : Request) (v : Vars) (np : NPath)
+    (o : Bytes → Option Kind) (p : Bytes) (size : Nat) (mtime : Int)
+    (hr : (route h sv req v np).run o = .file p size mtime) :
+    let l := (selectLocation sv.locations np.uri).getD defaultLocation
+    ∃ np', (selectLocation sv.locations np'.uri).getD defaultLocation = l ∧
+      FileOf l (effective h sv l) np' p := by
+  intro l
+  unfold route at hr
+  split at hr
+  · exact absurd hr (retAction_ne_file _ _ _ _ _)
+  · simp only at hr
+    split at hr
+    · exact absurd hr (retAction_ne_file _ _ _ _ _)
+    · simp [Step.run] at hr
+    · split at hr
+      · simp [Step.run] at hr
+      · split at hr
+        · obtain ⟨np', hown, hf⟩ := tryFiles_file_owned _ _ _ _ _ o _ p size mtime hr
+          exact ⟨np', by simpa using hown, hf⟩
+        · exact ⟨np, rfl, serveStatic_file_own _ _ _ _ o p size mtime hr⟩
 
 end Proofs
 end LeanNginx

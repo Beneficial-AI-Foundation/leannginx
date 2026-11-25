@@ -20,7 +20,13 @@
   logs). Keep decisions out of `Main.lean`: anything that decides a status code, a header, or a
   file path belongs in the pure layer with a spec.
 - Routing is a stat program (`Step`): `route` asks `stat` questions and `Main.runStep` answers
-  them. Specs quantify over all answers. New file-system lookups must go through `Step.stat`
+  them. `try_files` serves a hit only if its path selects the current location; otherwise it is an
+  internal redirect (`routeAuth_file_authorized`). Keep it that way: serving another location's
+  file here skips that location's `auth_basic`.
+- The specs model the file system as a function of path bytes. `Main.statPath` keeps that true on
+  case-insensitive file systems (exact names below `root`/`alias`); don't bypass it.
+- Slow clients: `Watch.limit` is a hard deadline for every read (TLS handshake, request head),
+  enforced by the sweeper however many reads LeanTLS makes; `worker_connections` caps connections. Specs quantify over all answers. New file-system lookups must go through `Step.stat`
   with paths built as `base ++ joinSegs segs` from safe segments, or `route_confined` breaks.
 - `parseRequest` is written as explicit matches (no `do`) so proofs can split every branch.
 

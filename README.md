@@ -88,7 +88,7 @@ To install it, copy the binary somewhere on your `PATH`, for example
 | Area | Supported |
 |---|---|
 | Syntax | nginx block syntax, `#` comments, quoted strings, `include` (with `*` globs), `nginx -t`-style errors (`unknown directive`, `invalid number of arguments`, …) |
-| Main / events | accepted (`worker_processes`, `events { … }`, `user`, `pid`, …); one process serves all connections with Lean tasks |
+| Main / events | `worker_processes` (Linux: SO_REUSEPORT workers), `events { worker_connections N; }` (open client connections per process, default 512; more are closed at once); `user`, `pid`, … accepted |
 | `http` | `server`, `types`, `include`, `default_type`, `access_log` (path or `off`), `keepalive_timeout`, `server_tokens`, `client_max_body_size`, plus everything inheritable below |
 | `server` | `listen` (`port`, `addr:port`, `[v6]:port`, `default_server`, `ssl`), `server_name` (exact, `*.example.com`, `.example.com`), `location`, `return` |
 | `location` | `=` exact, `^~`, prefix, `~` and `~*` regex; nginx's order (exact, longest prefix, first matching regex unless the prefix is `^~`). `root`, `alias`, `index`, `autoindex`, `try_files` (incl. `=404`, `$uri/`, fallback URI), `return code [text\|URL]` (incl. `444`), `proxy_pass http://…`, `add_header`, `error_page` |
@@ -135,7 +135,7 @@ toolchain, which lean-zip does not build with yet.
 
 ## What's proved
 
-All in [`LeanNginx/Spec.lean`](LeanNginx/Spec.lean): 65 theorems, each pinned by the axiom audit.
+All in [`LeanNginx/Spec.lean`](LeanNginx/Spec.lean): 100 theorems, each pinned by the axiom audit.
 They use only `propext`, `Classical.choice` and `Quot.sound` (no `sorry`, no `native_decide`),
 except `gzip_roundtrip`, which is lean-zip's theorem and also trusts the compiled checker that
 `bv_decide` uses.
@@ -166,11 +166,20 @@ except `gzip_roundtrip`, which is lean-zip's theorem and also trusts the compile
   by one location and served from another's files. Internal redirects (index files, the
   `try_files` fallback) carry a normalised path that is not decoded again, and confinement holds
   after them (`route_internal_safe`, `route_confined_after_redirect`).
+- *Authorization:* whenever routing behind `auth_basic` serves a file, it is the file of a path
+  that selects the *same* location as the request, and that location's access check passed
+  (`routeAuth_file_authorized`). A `try_files` entry built from client input
+  (`try_files /q/$args.html` with `GET /?../admin/page`) therefore cannot serve a protected
+  location's file: a hit that belongs to another location becomes an internal redirect, and that
+  location's rules decide (nginx serves it, past `/admin/`'s `auth_basic`).
 - *Responses:* header names and values written to the wire contain no CR/LF
-  (`renderHead_values_safe`), autoindex text is HTML-escaped, byte ranges lie inside the file
+  (`renderHead_values_safe`), autoindex text is HTML-escaped and every autoindex link is one
+  segment with no `:` or `/`, so a file named `javascript:alert(1)` stays a file name
+  (`autoindexHref_relative`), byte ranges lie inside the file
   and `Content-Length` equals the bytes sent (`fileResponse_body_in_file`).
 - *gzip:* decompressing what the server sends returns the file (`gzip_roundtrip`); compression is
-  used only for clients that accept it and never for range requests (`gzipApplies_requires`).
+  used only for clients that accept it, never for range requests and never for files above 1 MiB,
+  which bounds the memory a request can make compression use (`gzipApplies_requires`).
 - *Basic auth:* only a user from the user file with a matching password passes
   (`basicOk_sound`), and a 401 comes before any file is looked at (`routeAuth_denied`). A password
   longer than 511 bytes never matches and is not hashed (`verifyCrypt_long_password`), which
@@ -192,8 +201,34 @@ ETags, server names, variables, config lexing/parsing, `listen` and size/time ar
 
 **Not covered by specs:** `Main.lean` (sockets, file reads, logs, the proxy's byte relay) and the
 TLS connection loop in `LeanTLS/Server.lean`. `scripts/smoke.sh` checks them end to end
-(52 checks, including hostile requests, HTTPS with ECDSA and RSA certificates, SNI, a TLS 1.2
+(60 checks, including hostile requests, a `try_files` auth bypass attempt, HTTPS with ECDSA and RSA certificates, SNI, a TLS 1.2
 client being refused, gzip and regex locations).
+
+The IO shell also has limits that the specs cannot state: the request head (and the TLS
+handshake) must arrive within 60 s in all, however slowly its bytes come (nginx's
+`client_header_timeout`), at most `worker_connections` connections are open, and on a
+case-insensitive file system (macOS, Windows, casefolded mounts) a file is found only if every
+name below `root`/`alias` is spelled exactly as on disk. The specs model the file system as a
+function of the path bytes; without that check `GET /ADMIN/x` would select `location /` and read
+the file under `location /admin/`.
+
+### Penetration test (25 November 2026)
+
+A local server with password-protected locations, `try_files` (including the
+`/q/$args.html` pattern), `alias`, regex locations, autoindex, error pages, a secret file outside
+the root and HTTPS was attacked from outside: about 120 path, auth, parsing and splitting probes,
+and resource attacks (slow clients, connection floods, large bodies, gzip, ranges, 8 KB URIs,
+500 malformed or mutated TLS handshakes).
+
+Held: every attempt to leave the root (`..`, single and double encoding, overlong UTF-8,
+backslashes, NUL), request smuggling (CL/CL, CL/TE, obs-fold, bare CR), header injection, the
+regex matcher's cost, TLS parsing.
+
+Found and fixed: `try_files /q/$args.html` served another location's file past its `auth_basic`
+(now `routeAuth_file_authorized`); upper-case paths on macOS read files under a protected
+location; slow clients kept connections open indefinitely (per-read timeouts only, and none at
+all inside a TLS record); no limit on connections; 32 parallel requests for a 10 MB HTML file
+with gzip took 1.8 GB of memory; autoindex linked a file named `javascript:…` as a script URL.
 
 ```sh
 ./audit.sh            # regenerate LeanNginx/Audit.lean after changing specs
@@ -241,8 +276,15 @@ Where the time goes, and what was done about it:
 - Regex captures (`$1`), so `alias` inside a regex location is rejected; named locations
   (`@name`), nested locations, `rewrite`, `if`, `map`, `upstream` blocks, `expires`, custom
   `log_format`.
-- gzip applies to static files up to 16 MiB; proxied responses and autoindex pages are not
-  compressed.
+- gzip applies to static files up to 1 MiB; larger files, proxied responses and autoindex pages
+  are sent uncompressed.
+- `try_files` deliberately differs from nginx when an entry's path belongs to another location:
+  instead of serving that file under the current location, routing continues there (an internal
+  redirect), so its access rules apply.
+- On case-insensitive file systems nginx matches locations without regard to case; leannginx
+  instead requires file names to match exactly, as on Linux.
+- Not a security audit: the proofs cover the pure core; `Main.lean`, LeanTLS's connection loop,
+  the Lean runtime and libuv are tested, not proved.
 - Request bodies with `Transfer-Encoding: chunked` get `411 Length Required`.
 - `proxy_pass` speaks HTTP/1.0 to the upstream, does not support `https://` upstreams or
   WebSockets, and closes the client connection after a proxied response.
