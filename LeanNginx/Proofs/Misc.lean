@@ -326,4 +326,51 @@ theorem lowerB_hostByteOk (h : Bytes) (hh : ∀ c ∈ h, hostByteOk c = true) : 
   have := toLower_hostByteOk_nat x.toNat x.toNat_lt (by simpa using hh x hx)
   simpa using this
 
+
+/-! ## Safe segments, rooted URIs, suffix matching -/
+
+/-- A `Safe` segment is non-empty and contains no `/`. -/
+theorem safe_props (seg : Bytes) (h : Safe seg) : seg ≠ [] ∧ ∀ c ∈ seg, c ≠ 47 := by
+  have hs : segOk seg = true := h
+  refine ⟨fun he => by rw [he] at hs; simp [segOk] at hs, fun c hc => ?_⟩
+  unfold segOk at hs
+  simp only [Bool.and_eq_true] at hs
+  have hall := hs.2
+  rw [List.all_eq_true] at hall
+  have hcc := hall c hc
+  simp only [Bool.and_eq_true, bne_iff_ne, ne_eq] at hcc
+  exact hcc.1
+
+/-- **A normalised request URI is rooted and same-origin.** `$uri` always begins with exactly one
+`/`: its first byte is `/` and its second byte, if any, is not `/`. So `//evil.com/x` normalises
+to `/evil.com/x`, and `return 301 $uri` can never become a protocol-relative redirect to another
+host. -/
+theorem uri_rooted (np : NPath) (hs : ∀ s ∈ np.segs, Safe s) :
+    np.uri.head? = some 47 ∧ np.uri.tail.head? ≠ some 47 := by
+  cases hseg : np.segs with
+  | nil => simp [NPath.uri, hseg]
+  | cons seg rest =>
+    have hsafe : Safe seg := hs seg (hseg ▸ List.mem_cons_self)
+    obtain ⟨hne, hslash⟩ := safe_props seg hsafe
+    cases hs2 : seg with
+    | nil => exact absurd hs2 hne
+    | cons c s' =>
+      have hc : c ≠ 47 := hslash c (hs2 ▸ List.mem_cons_self)
+      refine ⟨?_, ?_⟩
+      · simp [NPath.uri, hseg, hs2, List.flatMap_cons]
+      · simp only [NPath.uri, hseg, hs2, List.flatMap_cons, List.isEmpty_cons, Bool.not_false,
+          Bool.and_true, List.cons_append, List.append_assoc, List.append_nil,
+          List.tail_cons, List.head?_cons, ne_eq, Option.some.injEq]
+        exact hc
+
+/-- `isSuffixB s b` means `b` genuinely ends in `s`. -/
+theorem isSuffixB_sound (s b : Bytes) (h : isSuffixB s b = true) : ∃ p, b = p ++ s := by
+  unfold isSuffixB at h
+  rw [List.isPrefixOf_iff_prefix] at h
+  obtain ⟨t, ht⟩ := h
+  refine ⟨t.reverse, ?_⟩
+  have hh := congrArg List.reverse ht
+  simp only [List.reverse_append, List.reverse_reverse] at hh
+  exact hh.symm
+
 end LeanNginx.Proofs

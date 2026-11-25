@@ -335,3 +335,21 @@ open LeanNginx.Spec
 
 /-- info: 'LeanNginx.Spec.vector_proxy_paths' depends on axioms: [propext, Classical.choice, Quot.sound] -/
 #guard_msgs (whitespace := lax) in #print axioms vector_proxy_paths
+
+/-- info: 'LeanNginx.Spec.normalizePath_uri_rooted' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs (whitespace := lax) in #print axioms normalizePath_uri_rooted
+
+/-- info: 'LeanNginx.Spec.vector_uri_rooted' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs (whitespace := lax) in #print axioms vector_uri_rooted
+
+/-- info: 'LeanNginx.Spec.nameMatches_exact' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs (whitespace := lax) in #print axioms nameMatches_exact
+
+/-- info: 'LeanNginx.Spec.nameMatches_wildcard' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs (whitespace := lax) in #print axioms nameMatches_wildcard
+
+/-- info: 'LeanNginx.Spec.nameMatches_dot' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs (whitespace := lax) in #print axioms nameMatches_dot
+
+/-- info: 'LeanNginx.Spec.vector_vhost_confusion' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs (whitespace := lax) in #print axioms vector_vhost_confusion

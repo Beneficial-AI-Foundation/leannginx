@@ -1289,4 +1289,60 @@ theorem vector_proxy_paths :
       some (.proxy { host := "up", port := 8080, uri := none } b!"/api/a%0D%0AX%3A1") := by
   decide +kernel
 
+/-! ## 11. Same-origin `$uri` and virtual-host confinement -/
+
+/-- **`$uri` is always rooted and same-origin.** For every request, the normalised URI begins
+with exactly one `/` (first byte `/`, second byte — if any — not `/`). A request line like
+`GET //evil.com/x` normalises to `/evil.com/x`, so `return 301 $uri;` (and any `$uri` placed in a
+`Location`) can never become a protocol-relative redirect `//evil.com/...` to another origin. -/
+theorem normalizePath_uri_rooted (raw : Bytes) (np : NPath) (h : normalizePath raw = some np) :
+    np.uri.head? = some 47 ∧ np.uri.tail.head? ≠ some 47 :=
+  Proofs.uri_rooted np (normalizePath_safe raw np h)
+
+theorem vector_uri_rooted :
+    ((normalizePath b!"//evil.com/x").map (·.uri) = some b!"/evil.com/x") ∧
+    ((normalizePath b!"/a//b/..//c").map (·.uri) = some b!"/a/c") := by
+  decide +kernel
+
+/-- **No virtual-host confusion: exact names are exact.** A plain `server_name` (no `*` or
+leading `.`) is selected for a host only when the host equals it, so `example.com` never matches
+`evil-example.com`. -/
+theorem nameMatches_exact (pat host : Bytes) (h1 : pat.take 2 ≠ b!"*.")
+    (h2 : pat.head? ≠ some 46) (h : nameMatches pat host = true) : pat = host := by
+  unfold nameMatches at h
+  split at h
+  · rename_i hc; exact absurd (by simpa using hc) h1
+  · split at h
+    · rename_i hc; exact absurd (by simpa using hc) h2
+    · simpa using h
+
+/-- A wildcard `*.dom` server name matches a host only when the host genuinely ends in `.dom`
+(the leading `.` is mandatory): so `*.example.com` matches `a.example.com` but never
+`example.com` itself nor `notexample.com`. -/
+theorem nameMatches_wildcard (dom host : Bytes)
+    (h : nameMatches (b!"*." ++ dom) host = true) : ∃ p, host = p ++ (46 :: dom) := by
+  have hred : nameMatches (b!"*." ++ dom) host = isSuffixB (46 :: dom) host := rfl
+  rw [hred] at h
+  exact Proofs.isSuffixB_sound _ _ h
+
+/-- A leading-dot `.dom` server name matches a host only when the host is `dom` itself or ends in
+`.dom`: so `.example.com` matches `example.com` and `a.example.com`, never `notexample.com`. -/
+theorem nameMatches_dot (dom host : Bytes)
+    (h : nameMatches (b!"." ++ dom) host = true) :
+    host = dom ∨ ∃ p, host = p ++ (46 :: dom) := by
+  have hred : nameMatches (b!"." ++ dom) host = (host == dom || isSuffixB (46 :: dom) host) := rfl
+  rw [hred, Bool.or_eq_true] at h
+  rcases h with h | h
+  · exact Or.inl (by simpa using h)
+  · exact Or.inr (Proofs.isSuffixB_sound _ _ h)
+
+theorem vector_vhost_confusion :
+    nameMatches b!"example.com" b!"evil-example.com" = false ∧
+    nameMatches b!"*.example.com" b!"example.com" = false ∧
+    nameMatches b!".example.com" b!"notexample.com" = false ∧
+    nameMatches b!"*.example.com" b!"a.example.com.evil.com" = false ∧
+    nameMatches b!"*.example.com" b!"a.example.com" = true ∧
+    nameMatches b!".example.com" b!"example.com" = true := by
+  decide +kernel
+
 end LeanNginx.Spec
