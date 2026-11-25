@@ -108,7 +108,7 @@ theorem route_autoindex' (h : HttpConf) (sv : Server) (req : Request) (v : Vars)
   · simp only at hr
     split at hr
     · exact absurd hr (retAction_ne_autoindex _ _ _)
-    · simp [Step.run] at hr
+    · split at hr <;> simp [Step.run] at hr
     · split at hr
       · simp [Step.run] at hr
       · split at hr
@@ -524,7 +524,7 @@ theorem route_file_own (h : HttpConf) (sv : Server) (req : Request) (v : Vars) (
   · simp only at hr
     split at hr
     · exact absurd hr (retAction_ne_file _ _ _ _ _)
-    · simp [Step.run] at hr
+    · split at hr <;> simp [Step.run] at hr
     · split at hr
       · simp [Step.run] at hr
       · split at hr

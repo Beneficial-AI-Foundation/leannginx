@@ -210,6 +210,24 @@ open LeanNginx.Spec
 /-- info: 'LeanNginx.Spec.vector_autoindex_href' depends on axioms: [propext, Classical.choice, Quot.sound] -/
 #guard_msgs (whitespace := lax) in #print axioms vector_autoindex_href
 
+/-- info: 'LeanNginx.Spec.renderHead_lines' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs (whitespace := lax) in #print axioms renderHead_lines
+
+/-- info: 'LeanNginx.Spec.findHeadEnd_first' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs (whitespace := lax) in #print axioms findHeadEnd_first
+
+/-- info: 'LeanNginx.Spec.hostName_chars' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs (whitespace := lax) in #print axioms hostName_chars
+
+/-- info: 'LeanNginx.Spec.basicCreds_user_no_colon' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs (whitespace := lax) in #print axioms basicCreds_user_no_colon
+
+/-- info: 'LeanNginx.Spec.keepAlive_cases' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs (whitespace := lax) in #print axioms keepAlive_cases
+
+/-- info: 'LeanNginx.Spec.notModified_iff' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs (whitespace := lax) in #print axioms notModified_iff
+
 /-- info: 'LeanNginx.Spec.resolveRange_in_file' depends on axioms: [propext, Classical.choice, Quot.sound] -/
 #guard_msgs (whitespace := lax) in #print axioms resolveRange_in_file
 
@@ -311,3 +329,9 @@ open LeanNginx.Spec
 
 /-- info: 'LeanNginx.Spec.vector_try_files_cross_location' depends on axioms: [propext, Classical.choice, Quot.sound] -/
 #guard_msgs (whitespace := lax) in #print axioms vector_try_files_cross_location
+
+/-- info: 'LeanNginx.Spec.route_proxy_target' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs (whitespace := lax) in #print axioms route_proxy_target
+
+/-- info: 'LeanNginx.Spec.vector_proxy_paths' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs (whitespace := lax) in #print axioms vector_proxy_paths

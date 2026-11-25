@@ -107,6 +107,9 @@ structure Watch where
   sock : TCP.Socket.Client
   /-- Monotonic milliseconds by which the pending read must finish; 0 = no read pending. -/
   deadline : IO.Ref Nat
+  /-- Monotonic milliseconds by which the pending write must finish (nginx's `send_timeout`,
+  60 s per write); 0 = no write pending. -/
+  sendDeadline : IO.Ref Nat
   /-- A hard limit for every read until it is reset (0 = none): the end of the TLS handshake or of
   the request head, however many reads they take (LeanTLS reads a record in several). -/
   limit : IO.Ref Nat
@@ -237,7 +240,18 @@ def recvW (w : Watch) (ms : Nat) : Async (Option (Option ByteArray)) := do
   | some (.ok v) => return some v
   | some (.error e) => throw e
 
-/-- The watchdog: once a second, cancel every read that is past its deadline. -/
+/-- Make the kernel fail a pending write on this socket (see `c/reuseport.c`). -/
+@[extern "lnginx_tcp_abort"]
+opaque abortSocket (socket : @& Std.Internal.UV.TCP.Socket) : IO Unit
+
+/-- Send with nginx's `send_timeout`: a write that makes no progress for 60 s (a client that does
+not read) is failed by the watchdog, which closes the connection. -/
+def sendW (w : Watch) (d : ByteArray) : Async Unit := do
+  w.sendDeadline.set ((← IO.monoMsNow) + 60000)
+  try w.sock.send d finally w.sendDeadline.set 0
+
+/-- The watchdog: once a second, cancel every read that is past its deadline and abort every
+write that is. -/
 partial def sweeper (reg : Registry) : Async Unit := do
   Std.Async.sleep 1000
   let now ← IO.monoMsNow
@@ -245,12 +259,16 @@ partial def sweeper (reg : Registry) : Async Unit := do
   for (_, w) in ws do
     let d ← w.deadline.get
     if d != 0 && now ≥ d then w.sock.native.cancelRecv
+    let sd ← w.sendDeadline.get
+    if sd != 0 && now ≥ sd then
+      w.sendDeadline.set 0
+      try abortSocket w.sock.native catch _ => pure ()
   sweeper reg
 
 /-- Register a socket with the watchdog for the duration of `k`. -/
 def withWatch (env : Env) (c : TCP.Socket.Client) (k : Watch → Async α) : Async α := do
   let id ← env.nextId.modifyGet fun n => (n, n + 1)
-  let w : Watch := { sock := c, deadline := ← IO.mkRef 0, limit := ← IO.mkRef 0 }
+  let w : Watch := { sock := c, deadline := ← IO.mkRef 0, sendDeadline := ← IO.mkRef 0, limit := ← IO.mkRef 0 }
   env.watches.atomically (modify (·.insert id w))
   try k w finally env.watches.atomically (modify (·.erase id))
 
@@ -267,7 +285,7 @@ structure Link where
 
 def tcpLink (w : Watch) : Link where
   recv := recvW w
-  send := w.sock.send
+  send := sendW w
   close := do try w.sock.shutdown catch _ => pure ()
   scheme := b!"http"
   limit := w.limit.set
@@ -676,7 +694,7 @@ def serveConn (env : Env) (port : Nat) (ssl : Bool) (c : TCP.Socket.Client) : As
     try connLoop env port peer plain .empty true
     catch _ => closeConn plain
     return
-  let tr : LeanTLS.Server.Transport := { recv := recvW w, send := c.send }
+  let tr : LeanTLS.Server.Transport := { recv := recvW w, send := sendW w }
   try
     -- the whole handshake within 60 s, however slowly its records arrive
     w.limit.set ((← IO.monoMsNow) + 60000)

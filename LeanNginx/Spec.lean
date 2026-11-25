@@ -611,7 +611,7 @@ theorem tryFiles_uri_serves_request_file (h : HttpConf) (sv : Server) (req : Req
     · simp only [hl] at hst
       split at hst
       · subst hst; exact absurd hrun (retAction_ne_file _ _ _ _ _)
-      · subst hst; simp [Step.run] at hrun
+      · subst hst; split at hrun <;> simp [Step.run] at hrun
       · split at hst
         · subst hst; simp [Step.run] at hrun
         · simp only [htf] at hst
@@ -763,6 +763,99 @@ theorem vector_autoindex_href :
     autoindexHref ⟨b!"javascript:alert(1)", false, 0, 0⟩ = b!"javascript%3Aalert(1)" ∧
     autoindexHref ⟨b!"a b", true, 0, 0⟩ = b!"a%20b/" := by
   decide +kernel
+
+/-- **Response heads have exactly the lines they should.** For every status code and every list
+of header fields (whatever their names and values: request data, configuration, an upstream's
+headers): the head written to the wire contains exactly `fields + 2` line feeds, one ending the
+status line, one per field and the empty line. No value can add a header line or end the head
+early (response splitting), because each field contributes exactly one. -/
+theorem renderHead_lines (code : Nat) (hs : List (Bytes × Bytes)) :
+    (renderHead code hs).count 10 = hs.length + 2 := by
+  unfold renderHead
+  simp only [List.count_append, Proofs.statusLine_lf, Proofs.flatMap_renderField_lf]
+  have : crlf.count 10 = 1 := by decide
+  rw [this]; omega
+
+/-- **Where a request head ends.** In any receive buffer, `findHeadEnd` finds the *first* empty
+line (LF LF, or LF CR LF): the head is everything before that line feed, the body or next request
+starts right after the empty line, inside the buffer, and no earlier position ends a head. So the
+server and a front proxy that both stop at the first empty line agree on the request boundary. -/
+theorem findHeadEnd_first (b : ByteArray) (hl e : Nat) (h : findHeadEnd b = some (hl, e)) :
+    headEndAt b hl = some e ∧ hl < e ∧ e ≤ b.size ∧ ∀ j < hl, headEndAt b j = none := by
+  obtain ⟨_, _, h3, h4⟩ := Proofs.findHeadEndFrom_first b _ 0 rfl hl e h
+  have := Proofs.headEndAt_bound b hl e h3
+  exact ⟨h3, this.1, this.2, fun j hj => h4 j (Nat.zero_le _) hj⟩
+
+/-! ## 10. Hosts, credentials, keep-alive, conditional requests -/
+
+/-- The host a request is routed by (and that `$host` and redirects carry) is made of host
+characters only (letters, digits, `-._:[]`), whatever `Host` header passed `hostOk`: no `/`,
+CR, LF, quote, `<`, `@` or space can reach a `Location` header through it. -/
+theorem hostName_chars (h : Bytes) (hh : hostOk h = true) : ∀ c ∈ hostName h, hostByteOk c = true := by
+  have hall : ∀ c ∈ h, hostByteOk c = true := by
+    simp only [hostOk, Bool.and_eq_true, Bool.not_eq_true', List.all_eq_true] at hh
+    exact hh.1.1.2
+  have hl := Proofs.lowerB_hostByteOk h hall
+  have key : ∀ np : Bytes, (∀ x ∈ np, hostByteOk x = true) →
+      ∀ x ∈ (if np.getLast? == some 46 then np.dropLast else np), hostByteOk x = true := by
+    intro np hnp x hx
+    split at hx
+    · exact hnp x ((List.dropLast_sublist _).subset hx)
+    · exact hnp x hx
+  intro c hc
+  unfold hostName at hc
+  refine key _ ?_ c hc
+  intro x hx
+  split at hx
+  · rcases List.mem_append.mp hx with hx | hx
+    · exact hl x (Proofs.splitFirst_fst_sub _ _ x hx)
+    · simp at hx; subst hx; decide
+  · exact hl x (Proofs.splitFirst_fst_sub _ _ x hx)
+
+/-- RFC 7617: the user name is everything before the *first* colon, so it never contains one
+(a password may). -/
+theorem basicCreds_user_no_colon (v u p : Bytes) (h : basicCreds v = some (u, p)) : 58 ∉ u := by
+  unfold basicCreds at h
+  split at h
+  · split at h
+    · split at h
+      · rename_i u' p' hd
+        simp only [Option.some.injEq, Prod.mk.injEq] at h
+        obtain ⟨rfl, -⟩ := h
+        rw [Option.map_eq_some_iff] at hd
+        obtain ⟨a, -, ha⟩ := hd
+        have := Proofs.splitFirst_fst_no_sep 58 a
+        rw [ha] at this; exact this
+      · cases h
+    · cases h
+  · cases h
+
+/-- An HTTP/1.0 request without `Connection: keep-alive` closes the connection; an HTTP/1.1 one
+with `Connection: close` does too (RFC 9112 §9.3). -/
+theorem keepAlive_cases (r : Request) :
+    (r.minor = 0 → (headerVals r.headers b!"connection").isEmpty → r.keepAlive = false) ∧
+    (r.minor = 1 → b!"close" ∈ (headerVals r.headers b!"connection").map lowerB → r.keepAlive = false) := by
+  constructor
+  · intro hm he
+    rw [List.isEmpty_iff] at he
+    simp [Request.keepAlive, hm, he]
+  · intro hm hc
+    simp only [Request.keepAlive, hm]
+    simp only [beq_self_eq_true, ↓reduceIte, Bool.not_eq_eq_eq_not, Bool.not_false]
+    rw [List.any_eq_true]
+    refine ⟨b!"close", hc, ?_⟩
+    rw [List.any_eq_true]
+    exact ⟨b!"close", by decide, by decide⟩
+
+/-- A `304 Not Modified` is sent only when `If-None-Match` lists this file's ETag (or `*`), or,
+without `If-None-Match`, when `If-Modified-Since` is exactly its `Last-Modified`. -/
+theorem notModified_iff (req : Request) (tag lm : Bytes) :
+    notModified req tag lm = true ↔
+      (∃ inm, header? req.headers b!"if-none-match" = some inm ∧ etagMatches inm tag = true) ∨
+      (header? req.headers b!"if-none-match" = none ∧
+        header? req.headers b!"if-modified-since" = some lm) := by
+  unfold notModified
+  cases header? req.headers b!"if-none-match" <;> simp
 
 /-- A satisfiable range lies inside the file. -/
 theorem resolveRange_in_file (size : Nat) (spec : Bytes) (a b : Nat)
@@ -1133,6 +1226,67 @@ theorem vector_try_files_cross_location :
         ⟨[b!"admin", b!"page.html"], false⟩ (fun _ => []) none).run tAllFiles = .error 401) ∧
     ((routeAuth {} tArgsServer (tReq b!"GET" b!"/") (tArgsVars b!"x")
         ⟨[], true⟩ (fun _ => []) none).run tAllFiles = .internal ⟨[b!"q", b!"x.html"], false⟩ none) := by
+  decide +kernel
+
+/-! ## 9. Reverse proxy: the upstream gets the path that was routed -/
+
+/-- **No path confusion with the upstream.** For every configuration, request and file system:
+when a request is proxied by a location whose `proxy_pass` has no URI part, the upstream's
+request target is the routed path itself (decoded once, `.`/`..` resolved), re-encoded so that
+only RFC 3986 unreserved bytes, `/` and `%XX` escapes remain, followed by the query. Decoding it
+once gives back exactly the path the location was selected on, and no segment is one that some
+servers read as `..` (`..;`, a backslash). So `/admin/..%2Fapi/x`, routed as `/api/x`, reaches
+the upstream as `/api/x`, not as a path the upstream may resolve under `/admin/`. -/
+theorem route_proxy_target (h : HttpConf) (sv : Server) (req : Request) (v : Vars) (np : NPath)
+    (o : Bytes → Option Kind) (up : Upstream) (target : Bytes)
+    (hr : (route h sv req v np).run o = .proxy up target) (hu : up.uri = none) :
+    ∃ p, target = withQuery p req.query ∧ percentDecode p = some np.uri ∧
+      (∀ c ∈ p, proxySafeByte c = true ∨ c = 37) ∧ (∀ s ∈ np.segs, proxyAmbiguous s = false) := by
+  unfold route at hr
+  split at hr
+  · exact absurd hr (by unfold retAction; split <;> (try split) <;> simp [Step.run])
+  · simp only at hr
+    split at hr
+    · exact absurd hr (by unfold retAction; split <;> (try split) <;> simp [Step.run])
+    · split at hr
+      · simp [Step.run] at hr
+      · rename_i hamb
+        simp only [Step.run, Action.proxy.injEq] at hr
+        obtain ⟨rfl, rfl⟩ := hr
+        refine ⟨percentEncodeStrict np.uri, by simp [hu], Proofs.percentDecode_percentEncodeStrict _,
+          Proofs.percentEncodeStrict_bytes _, ?_⟩
+        intro s hs
+        cases hx : proxyAmbiguous s
+        · rfl
+        · simp_all
+    · split at hr
+      · simp [Step.run] at hr
+      · split at hr
+        · exact absurd hr (Proofs.noProxy_run o _ (Proofs.tryFiles_noProxy _ _ _ _ _ _) up target)
+        · exact absurd hr (Proofs.noProxy_run o _ (Proofs.serveStatic_noProxy _ _ _ _) up target)
+
+/-- `location /api/ { proxy_pass http://up:8080; }` next to anything else. -/
+def tProxyServer : Server :=
+  { s := { root := some b!"/srv/www" },
+    locations := [{ kind := .pre, uri := b!"/api/", proxy := some { host := "up", port := 8080, uri := none } },
+                  { kind := .pre, uri := b!"/admin/", s := { authBasic := some (some b!"admin") } }] }
+
+theorem vector_proxy_paths :
+    -- routed as /api/x, and that is what the upstream gets (nginx would send /admin/..%2Fapi/x)
+    ((normalizePath b!"/admin/..%2Fapi/x").map fun np =>
+      (route {} tProxyServer (tReq b!"GET" b!"/admin/..%2Fapi/x") (tArgsVars []) np).run tAllFiles) =
+      some (.proxy { host := "up", port := 8080, uri := none } b!"/api/x") ∧
+    -- `..;` (Tomcat's `..`) and a backslash are refused
+    ((normalizePath b!"/api/..;/admin").map fun np =>
+      (route {} tProxyServer (tReq b!"GET" b!"/api/..;/admin") (tArgsVars []) np).run tAllFiles) =
+      some (.error 400) ∧
+    ((normalizePath b!"/api/..%5Cadmin").map fun np =>
+      (route {} tProxyServer (tReq b!"GET" b!"/api/..%5Cadmin") (tArgsVars []) np).run tAllFiles) =
+      some (.error 400) ∧
+    -- an encoded CR LF stays encoded
+    ((normalizePath b!"/api/a%0d%0aX:1").map fun np =>
+      (route {} tProxyServer (tReq b!"GET" b!"/api/a%0d%0aX:1") (tArgsVars []) np).run tAllFiles) =
+      some (.proxy { host := "up", port := 8080, uri := none } b!"/api/a%0D%0AX%3A1") := by
   decide +kernel
 
 end LeanNginx.Spec

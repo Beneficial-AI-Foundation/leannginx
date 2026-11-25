@@ -26,7 +26,9 @@
 - The specs model the file system as a function of path bytes. `Main.statPath` keeps that true on
   case-insensitive file systems (exact names below `root`/`alias`); don't bypass it.
 - Slow clients: `Watch.limit` is a hard deadline for every read (TLS handshake, request head),
-  enforced by the sweeper however many reads LeanTLS makes; `worker_connections` caps connections. Specs quantify over all answers. New file-system lookups must go through `Step.stat`
+  enforced by the sweeper however many reads LeanTLS makes; `worker_connections` caps connections.
+  Writes go through `sendW` (60 s `send_timeout`; the sweeper calls `abortSocket` in
+  `c/reuseport.c`). The proxy forwards `percentEncodeStrict np.uri`, never `req.path`. Specs quantify over all answers. New file-system lookups must go through `Step.stat`
   with paths built as `base ++ joinSegs segs` from safe segments, or `route_confined` breaks.
 - `parseRequest` is written as explicit matches (no `do`) so proofs can split every branch.
 

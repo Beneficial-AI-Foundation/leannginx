@@ -134,5 +134,7 @@ check "try_files no auth bypass" 401 "$(code --path-as-is "$B/cat?../secret/s")"
 check "try_files bypass, creds"  "secret page" "$(curl -s -u smoke:hunter2 --path-as-is "$B/cat?../secret/s")"
 check "names are case-exact"     404 "$(code "$B/SECRET/s.html")"
 check "autoindex link encoded"   1 "$(curl -s $B/ls/ | grep -c 'href="javascript%3Aalert(1)"')"
+check "proxy refuses ..;"         400 "$(code --path-as-is "$B/api/..;/x")"
+check "proxy sends routed path"  "from upstream" "$(curl -s --path-as-is "$B/files/..%2Fapi/u.txt")"
 check "access log"         1 "$(grep -c '"GET /files/hello.txt HTTP/1.1" 200 21' "$TMP/access.log" | awk '{print ($1>0)}')"
 [ $fail = 0 ] && echo "all smoke checks passed" || { echo "some smoke checks FAILED"; exit 1; }

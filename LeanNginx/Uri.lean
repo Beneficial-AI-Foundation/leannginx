@@ -102,6 +102,24 @@ def percentEncodeSeg : Bytes → Bytes
     if segSafeByte c then c :: percentEncodeSeg rest
     else 37 :: hexUpper (c.toNat / 16) :: hexUpper (c.toNat % 16) :: percentEncodeSeg rest
 
+/-- RFC 3986 unreserved bytes and `/`: what a path sent to a `proxy_pass` upstream contains
+unescaped. Everything else, `;`, `\\` and `%` among them, is percent-encoded. -/
+def proxySafeByte (c : UInt8) : Bool :=
+  isAlpha c || isDigit c || c == 45 || c == 46 || c == 95 || c == 126 || c == 47
+
+/-- Percent-encode everything outside `proxySafeByte`. -/
+def percentEncodeStrict : Bytes → Bytes
+  | [] => []
+  | c :: rest =>
+    if proxySafeByte c then c :: percentEncodeStrict rest
+    else 37 :: hexUpper (c.toNat / 16) :: hexUpper (c.toNat % 16) :: percentEncodeStrict rest
+
+/-- A path segment that some upstream servers read as `.` or `..` although it is neither: a
+backslash (IIS and others treat it as `/`), or `.`/`..` followed by a `;` path parameter
+(`..;`, which Tomcat, Jetty and Spring resolve as `..`). Such paths are not proxied. -/
+def proxyAmbiguous (s : Bytes) : Bool :=
+  s.contains 92 || (let p := (splitFirst 59 s).1; p == b!"." || p == b!"..")
+
 /-- Split a request target into path and query (`?`). -/
 def splitTarget (t : Bytes) : Bytes × Option Bytes := splitFirst 63 t
 

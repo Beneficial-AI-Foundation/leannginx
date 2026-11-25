@@ -157,7 +157,7 @@ theorem route_confined' (h : HttpConf) (sv : Server) (req : Request) (v : Vars) 
   · simp only
     split
     · exact retAction_confined _ _ _
-    · simp [Step.Confined]
+    · split <;> simp [Step.Confined]
     · split
       · simp [Step.Confined]
       · split
@@ -270,12 +270,74 @@ theorem route_redirects' (h : HttpConf) (sv : Server) (req : Request) (v : Vars)
   · simp only
     split
     · exact retAction_redirects _ _
-    · simp [Step.RedirectsSafe, Action.RedirectSafe]
+    · split <;> simp [Step.RedirectsSafe, Action.RedirectSafe]
     · split
       · simp [Step.RedirectsSafe, Action.RedirectSafe]
       · split
         · exact tryFiles_redirects _ _ _ _ _ _
         · exact serveStatic_redirects _ _ _ _ hnp
+
+/-! ## Which kinds of action a stat program can end in -/
+
+/-- Every action the program can end in, whatever the `stat` answers, is not a proxy action. -/
+def _root_.LeanNginx.Step.NoProxy : Step → Prop
+  | .done a => ∀ up t, a ≠ .proxy up t
+  | .stat _ k => ∀ r, (k r).NoProxy
+
+theorem noProxy_run (o : Bytes → Option Kind) : ∀ s : Step, s.NoProxy → ∀ up t, s.run o ≠ .proxy up t
+  | .done a, h => by simpa [Step.run, Step.NoProxy] using h
+  | .stat p k, h => by simp only [Step.run]; exact noProxy_run o (k (o p)) (h (o p))
+
+theorem serveDir_noProxy (eff : Settings) (np : NPath) (base : Bytes) (segs : List Bytes) :
+    ∀ idxs, (serveDir eff np base segs idxs).NoProxy
+  | [] => by
+    simp only [serveDir, Step.NoProxy]
+    intro r; split <;> (try split) <;> simp [Step.NoProxy]
+  | idx :: rest => by
+    simp only [serveDir]
+    split
+    · simp only [Step.NoProxy]
+      intro r; split
+      · simp [Step.NoProxy]
+      · exact serveDir_noProxy eff np base segs rest
+    · exact serveDir_noProxy eff np base segs rest
+
+theorem serveStatic_noProxy (l : Location) (eff : Settings) (np : NPath) (q : Option Bytes) :
+    (serveStatic l eff np q).NoProxy := by
+  unfold serveStatic
+  split
+  · simp [Step.NoProxy]
+  · split
+    · exact serveDir_noProxy _ _ _ _ _
+    · simp only [Step.NoProxy]; intro r; split <;> simp [Step.NoProxy]
+
+theorem tryFiles_noProxy (l : Location) (eff : Settings) (v : Vars) (q : Option Bytes)
+    (own : NPath → Bool) : ∀ items, (tryFiles l eff v q own items).NoProxy
+  | [] => by simp [tryFiles, Step.NoProxy]
+  | [last] => by
+    simp only [tryFiles]
+    split
+    · simp [Step.NoProxy]
+    · split <;> simp [Step.NoProxy]
+  | item :: r :: rs => by
+    have ih := tryFiles_noProxy l eff v q own (r :: rs)
+    simp only [tryFiles]
+    split
+    · exact ih
+    · split
+      · exact ih
+      · simp only [Step.NoProxy]
+        intro res
+        split
+        · split
+          · exact ih
+          · split <;> simp [Step.NoProxy]
+        · split
+          · split
+            · exact serveDir_noProxy _ _ _ _ _
+            · simp [Step.NoProxy]
+          · exact ih
+        · exact ih
 
 /-! ## Location selection -/
 
