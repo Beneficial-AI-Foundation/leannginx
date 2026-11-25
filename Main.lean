@@ -546,11 +546,11 @@ def accessLog (env : Env) (peer : String) (reqLine : Bytes) (req? : Option Reque
 
 /-- Serve one parsed request. Internal redirects (index, `try_files`, `error_page`) loop here,
 at most 10 times, like nginx. -/
-def handle (env : Env) (port : Nat) (peer : String) (c : Link) (req : Request)
+def handle (env : Env) (addr : Option String) (port : Nat) (peer : String) (c : Link) (req : Request)
     (body : ByteArray) : Async Out := do
   let head := req.method == b!"HEAD"
   let keep := req.keepAlive
-  let some sv := selectServer env.http.servers port req.host
+  let some sv := selectServer env.http.servers addr port req.host
     | sendErrorPage env c head false 500
   let host := req.host.getD ((sv.names.find? (fun n => !n.isEmpty && n != b!"_")).getD b!"localhost")
   let some np0 := normalizePath req.path | sendErrorPage env c head false 400
@@ -636,7 +636,7 @@ def handle (env : Env) (port : Nat) (peer : String) (c : Link) (req : Request)
 
 def firstLine (h : ByteArray) : Bytes := (headLines (h.extract 0 (min h.size 8192)).toList).headD []
 
-partial def connLoop (env : Env) (port : Nat) (peer : String) (c : Link)
+partial def connLoop (env : Env) (addr : Option String) (port : Nat) (peer : String) (c : Link)
     (buf : ByteArray) (first : Bool) : Async Unit := do
   let ms := if first then 60000 else env.http.keepaliveTimeout * 1000
   let deadline := (← IO.monoMsNow) + ms
@@ -670,37 +670,38 @@ partial def connLoop (env : Env) (port : Nat) (peer : String) (c : Link)
       | some all =>
         let body := all.extract 0 req.contentLength
         let rest := all.extract req.contentLength all.size
-        let o ← handle env port peer c req body
+        let o ← handle env addr port peer c req body
         accessLog env peer reqLine (some req) o
-        if o.keep then connLoop env port peer c rest false else closeConn c
+        if o.keep then connLoop env addr port peer c rest false else closeConn c
 
 /-- The TLS identity for an SNI name on `port`: the matching server's, else the port's default. -/
-def pickIdentity (env : Env) (port : Nat) (sni : Option String) : Option LeanTLS.Server.Identity :=
+def pickIdentity (env : Env) (addr : Option String) (port : Nat) (sni : Option String) :
+    Option LeanTLS.Server.Identity :=
   let host := sni.map fun s => lowerB (ofStr s)
   let ofServer (sv : Server) := (env.idents[sv.idx]?).join
-  match (selectServer env.http.servers port host).bind ofServer with
+  match (selectServer env.http.servers addr port host).bind ofServer with
   | some i => some i
-  | none => (serversOn env.http.servers port).findSome? ofServer
+  | none => (serversOn env.http.servers addr port).findSome? ofServer
 
 /-- nginx's answer to plain HTTP on a TLS port. -/
 def plainOnTlsPage (tokens : Bool) : Bytes :=
   b!"<html>\r\n<head><title>400 The plain HTTP request was sent to HTTPS port</title></head>\r\n<body>\r\n<center><h1>400 Bad Request</h1></center>\r\n<center>The plain HTTP request was sent to HTTPS port</center>\r\n<hr><center>" ++
     serverName tokens ++ b!"</center>\r\n</body>\r\n</html>\r\n"
 
-def serveConn (env : Env) (port : Nat) (ssl : Bool) (c : TCP.Socket.Client) : Async Unit :=
+def serveConn (env : Env) (addr : Option String) (port : Nat) (ssl : Bool) (c : TCP.Socket.Client) : Async Unit :=
   withWatch env c fun w => do
   let peer ← try (addrString <$> c.getPeerName) catch _ => pure "-"
   let plain := tcpLink w
   if !ssl then
-    try connLoop env port peer plain .empty true
+    try connLoop env addr port peer plain .empty true
     catch _ => closeConn plain
     return
   let tr : LeanTLS.Server.Transport := { recv := recvW w, send := sendW w }
   try
     -- the whole handshake within 60 s, however slowly its records arrive
     w.limit.set ((← IO.monoMsNow) + 60000)
-    match ← LeanTLS.Server.accept tr (pickIdentity env port) 60000 with
-    | .tls t => w.limit.set 0; connLoop env port peer (tlsLink t w) .empty true
+    match ← LeanTLS.Server.accept tr (pickIdentity env addr port) 60000 with
+    | .tls t => w.limit.set 0; connLoop env addr port peer (tlsLink t w) .empty true
     | .plain _ =>
       let o ← sendSimple env plain false false 400 b!"text/html" (plainOnTlsPage env.http.serverTokens) []
       accessLog env peer [] none o
@@ -718,6 +719,9 @@ opaque bindReusePortNative (socket : @& Std.Internal.UV.TCP.Socket) (addr : @& S
 
 structure Bound where
   sock : TCP.Socket.Server
+  /-- The local address this socket is bound to (`none` = the wildcard `0.0.0.0`). Server
+  selection matches it exactly, so an address-restricted vhost is reachable only here. -/
+  addr : Option String
   port : Nat
   ssl : Bool
   label : String
@@ -737,7 +741,7 @@ def bindListen (reusePort : Bool) (l : Listen) : IO Bound := do
   catch e => throw (IO.userError s!"bind() to {addrS}:{l.port} failed ({e})")
   let shown := if addrS == "0.0.0.0" then "localhost" else if addrS.contains ':' then s!"[{addrS}]" else addrS
   let scheme := if l.ssl then "https" else "http"
-  return { sock := s, port := l.port, ssl := l.ssl, label := s!"{scheme}://{shown}:{l.port}/" }
+  return { sock := s, addr := l.addr, port := l.port, ssl := l.ssl, label := s!"{scheme}://{shown}:{l.port}/" }
 
 partial def acceptLoop (env : Env) (b : Bound) : Async Unit := do
   let c ← try (some <$> b.sock.accept) catch e => do eprintln s!"accept() failed ({e})"; pure none
@@ -749,7 +753,7 @@ partial def acceptLoop (env : Env) (b : Bound) : Async Unit := do
       try c.shutdown catch _ => pure ()
     else
       background do
-        try serveConn env b.port b.ssl c
+        try serveConn env b.addr b.port b.ssl c
         finally env.active.modify (· - 1)
   acceptLoop env b
 

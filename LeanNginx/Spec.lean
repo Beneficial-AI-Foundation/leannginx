@@ -979,11 +979,15 @@ theorem vector_gzip_types :
 
 /-! ## 6. Virtual hosts and variables (nginx-tests: `http_server_name.t`, `http_variables.t`) -/
 
-/-- The selected server listens on the port the request came in on. -/
-theorem selectServer_port (servers : List Server) (port : Nat) (host : Option Bytes) (s : Server)
-    (h : selectServer servers port host = some s) :
-    s ∈ servers ∧ s.listens.any (·.port == port) = true := by
-  have key : s ∈ serversOn servers port := by
+/-- The selected server has a `listen` matching *both* the local address the connection was
+accepted on and the port. The address match is exact (the wildcard `0.0.0.0` is `none`), so a
+vhost bound to a specific address — e.g. a loopback-only admin block — is never served on another
+interface. The IO shell passes the accepting socket's bind address (`Bound.addr`). -/
+theorem selectServer_listen (servers : List Server) (addr : Option String) (port : Nat)
+    (host : Option Bytes) (s : Server)
+    (h : selectServer servers addr port host = some s) :
+    s ∈ servers ∧ s.listens.any (fun l => l.addr == addr && l.port == port) = true := by
+  have key : s ∈ serversOn servers addr port := by
     unfold selectServer at h
     simp only [Option.orElse_eq_orElse, Option.orElse_eq_or, Option.or_eq_some_iff] at h
     rcases h with h | ⟨_, h | ⟨_, h⟩⟩
@@ -998,6 +1002,24 @@ theorem selectServer_port (servers : List Server) (port : Nat) (host : Option By
     · exact List.mem_of_find?_eq_some h
     · exact List.mem_of_mem_head? h
   simpa [serversOn, List.mem_filter] using key
+
+/-- Concrete regression for the address-restricted-vhost bypass. A loopback-only `admin.internal`
+(on `127.0.0.1`) and a public `www.example.com` (on `127.0.0.2`) share port 8080. A request on the
+public address can neither spoof the admin vhost by `Host:` nor reach it with no `Host` (even when
+the admin block is listed first and nothing is `default_server`); only its own address does. -/
+theorem vector_listen_addr :
+    let lAdmin : Listen := { addr := some "127.0.0.1", port := 8080, default := false }
+    let lWww : Listen := { addr := some "127.0.0.2", port := 8080, default := true }
+    let admin : Server := { idx := 0, names := [b!"admin.internal"], listens := [lAdmin] }
+    let www : Server := { idx := 1, names := [b!"www.example.com"], listens := [lWww] }
+    -- admin reachable only on its own address
+    (selectServer [admin, www] (some "127.0.0.1") 8080 (some b!"admin.internal")).map (·.idx) = some 0 ∧
+    -- spoofed Host on the public address falls back to the public default, not admin
+    (selectServer [admin, www] (some "127.0.0.2") 8080 (some b!"admin.internal")).map (·.idx) = some 1 ∧
+    -- admin first, no default_server anywhere: a hostless request on the public address skips admin
+    (selectServer [{ admin with listens := [lAdmin] }, { www with listens := [{ lWww with default := false }] }]
+        (some "127.0.0.2") 8080 none).map (·.idx) = some 1 := by
+  decide +kernel
 
 /-- Server names: exact, `*.suffix` (sub-domains only), `.suffix` (domain and sub-domains). -/
 theorem vector_server_names :
@@ -1033,9 +1055,13 @@ theorem vector_unterminated :
   decide +kernel
 
 theorem vector_listen :
-    (parseListen [b!"8080"]).toOption.map (fun l => (l.port, l.default)) = some (8080, false) ∧
-    (parseListen [b!"127.0.0.1:81", b!"default_server"]).toOption.map (fun l => (l.port, l.default)) =
-      some (81, true) ∧
+    (parseListen [b!"8080"]).toOption.map (fun l => (l.addr, l.port, l.default)) = some (none, 8080, false) ∧
+    (parseListen [b!"127.0.0.1:81", b!"default_server"]).toOption.map (fun l => (l.addr, l.port, l.default)) =
+      some (some "127.0.0.1", 81, true) ∧
+    -- `0.0.0.0`, `*` and a bare port are the same wildcard address, so vhosts written either way
+    -- share a candidate set (address matching in `selectServer` is by this canonical form)
+    (parseListen [b!"0.0.0.0:8080"]).toOption.bind (fun l => l.addr) = none ∧
+    (parseListen [b!"*:8080"]).toOption.bind (fun l => l.addr) = none ∧
     (parseListen [b!"99999"]).toOption.isNone = true := by
   decide +kernel
 

@@ -269,7 +269,8 @@ def parseListen (args : List Bytes) : Except String Listen := do
     let some port := parseNat? portB | throw s!"invalid port in \"{toStr a}\" of the \"listen\" directive"
     unless 0 < port && port < 65536 do throw s!"invalid port in \"{toStr a}\" of the \"listen\" directive"
     let addr := match addr with
-      | some h => if h == b!"*" then none else if h == b!"localhost" then some "127.0.0.1" else some (toStr h)
+      | some h => if h == b!"*" || h == b!"0.0.0.0" then none
+                  else if h == b!"localhost" then some "127.0.0.1" else some (toStr h)
       | none => none
     pure { addr, port, default := dflt, ssl := opts.contains b!"ssl" }
 
