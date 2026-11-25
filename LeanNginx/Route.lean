@@ -25,16 +25,23 @@ def nameMatches (pat host : Bytes) : Bool :=
   else if pat.head? == some 46 then host == pat.drop 1 || isSuffixB pat host
   else pat == host
 
-def serversOn (servers : List Server) (port : Nat) : List Server :=
-  servers.filter fun s => s.listens.any (·.port == port)
+/-- Candidate servers for a connection accepted on local address `addr` (`none` = the wildcard
+socket) and `port`. nginx hands each connection to the most specific bound socket and only its
+own servers are candidates, so the match on `addr` is exact: a `listen 127.0.0.1:…` server is
+*not* reachable through the wildcard socket, and vice versa. Without the `addr` match an
+address-restricted vhost (e.g. a loopback-only admin block) would be served on every interface. -/
+def serversOn (servers : List Server) (addr : Option String) (port : Nat) : List Server :=
+  servers.filter fun s => s.listens.any fun l => l.addr == addr && l.port == port
 
 /-- nginx order: exact name, then wildcard, then the `default_server`, then the first server. -/
-def selectServer (servers : List Server) (port : Nat) (host : Option Bytes) : Option Server :=
-  let cands := serversOn servers port
+def selectServer (servers : List Server) (addr : Option String) (port : Nat) (host : Option Bytes) :
+    Option Server :=
+  let cands := serversOn servers addr port
   let byName := host.bind fun h =>
     (cands.find? (·.names.contains h)) <|>
     (cands.find? (·.names.any fun p => (p.head? == some 42 || p.head? == some 46) && nameMatches p h))
-  byName <|> cands.find? (·.listens.any fun l => l.port == port && l.default) <|> cands.head?
+  byName <|> cands.find? (·.listens.any fun l => l.addr == addr && l.port == port && l.default)
+         <|> cands.head?
 
 def matchesLoc (l : Location) (uri : Bytes) : Bool :=
   match l.kind with

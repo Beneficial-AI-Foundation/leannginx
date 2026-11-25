@@ -258,8 +258,11 @@ open LeanNginx.Spec
 /-- info: 'LeanNginx.Spec.vector_gzip_types' depends on axioms: [propext, Classical.choice, Quot.sound] -/
 #guard_msgs (whitespace := lax) in #print axioms vector_gzip_types
 
-/-- info: 'LeanNginx.Spec.selectServer_port' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs (whitespace := lax) in #print axioms selectServer_port
+/-- info: 'LeanNginx.Spec.selectServer_listen' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs (whitespace := lax) in #print axioms selectServer_listen
+
+/-- info: 'LeanNginx.Spec.vector_listen_addr' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs (whitespace := lax) in #print axioms vector_listen_addr
 
 /-- info: 'LeanNginx.Spec.vector_server_names' depends on axioms: [propext, Classical.choice, Quot.sound] -/
 #guard_msgs (whitespace := lax) in #print axioms vector_server_names
