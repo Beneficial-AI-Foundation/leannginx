@@ -136,5 +136,19 @@ check "names are case-exact"     404 "$(code "$B/SECRET/s.html")"
 check "autoindex link encoded"   1 "$(curl -s $B/ls/ | grep -c 'href="javascript%3Aalert(1)"')"
 check "proxy refuses ..;"         400 "$(code --path-as-is "$B/api/..;/x")"
 check "proxy sends routed path"  "from upstream" "$(curl -s --path-as-is "$B/files/..%2Fapi/u.txt")"
+# RFC MUST + fail-loud fixes
+ALLOW=$(raw 'POST / HTTP/1.1\r\nHost: a\r\n\r\n'; printf '' )
+check "405 has Allow"          1   "$(printf 'POST /files/hello.txt HTTP/1.1\r\nHost: a\r\nConnection: close\r\n\r\n' | nc -w 2 127.0.0.1 $PORT | tr -d '\r' | grep -ic '^Allow: GET, HEAD$')"
+check "no 100 to HTTP/1.0"     0   "$(printf 'POST /files/hello.txt HTTP/1.0\r\nHost: a\r\nExpect: 100-continue\r\nContent-Length: 3\r\n\r\nabc' | nc -w 2 127.0.0.1 $PORT | grep -c '100 Continue')"
+check "100 to HTTP/1.1"        1   "$(printf 'POST /files/hello.txt HTTP/1.1\r\nHost: a\r\nExpect: 100-continue\r\nContent-Length: 3\r\n\r\n' | nc -w 2 127.0.0.1 $PORT | grep -c '100 Continue')"
+# -t must reject security-relevant unsupported directives
+rejconf() { printf 'http{server{listen 127.0.0.1:%d;%s}}\n' "$PORT" "$1" > "$TMP/rej.conf"; "$BIN" -t -c "$TMP/rej.conf" >/dev/null 2>&1; echo $?; }
+check "reject proxy_set_header" 1 "$(rejconf 'proxy_set_header X-Forwarded-For "";')"
+check "reject user"            1 "$(printf 'user nginx;\nhttp{server{listen 127.0.0.1:%d;}}\n' "$PORT" > "$TMP/rej.conf"; "$BIN" -t -c "$TMP/rej.conf" >/dev/null 2>&1; echo $?)"
+check "reject add_header always" 1 "$(rejconf 'add_header X-Frame-Options DENY always;')"
+check "accept add_header (2-arg)" 0 "$(rejconf 'add_header X-Frame-Options DENY;')"
+check "HTTP/1.1 needs Host"    400 "$(raw 'GET http://a/ HTTP/1.1\r\n\r\n')"
+check "reject proxy URI in regex" 1 "$(printf 'http{server{listen 127.0.0.1:%d;location ~ /api {proxy_pass http://127.0.0.1:1/v2/;}}}\n' "$PORT" > "$TMP/rej.conf"; "$BIN" -t -c "$TMP/rej.conf" >/dev/null 2>&1; echo $?)"
+check "accept proxy URI in prefix" 0 "$(printf 'http{server{listen 127.0.0.1:%d;location /api/ {proxy_pass http://127.0.0.1:1/v2/;}}}\n' "$PORT" > "$TMP/rej.conf"; "$BIN" -t -c "$TMP/rej.conf" >/dev/null 2>&1; echo $?)"
 check "access log"         1 "$(grep -c '"GET /files/hello.txt HTTP/1.1" 200 21' "$TMP/access.log" | awk '{print ($1>0)}')"
 [ $fail = 0 ] && echo "all smoke checks passed" || { echo "some smoke checks FAILED"; exit 1; }

@@ -7,7 +7,8 @@ Status lines and headers (`renderHead`), nginx-style error pages, MIME types, HT
 
 Header injection is impossible by construction: `renderHead` drops every byte that is not a
 legal field byte from names and values, so a CR or LF can never reach the wire inside a header
-(spec `renderHead_noInjection`). Ranges are proved to stay inside the file (`resolveRange_bounds`).
+(specs `renderHead_values_safe`, `renderHead_names_safe`). Ranges are proved to stay inside the
+file (`resolveRange_bounds`).
 -/
 namespace LeanNginx
 
@@ -30,7 +31,7 @@ def reason (code : Nat) : Bytes :=
   | _ => []
 
 def statusLine (code : Nat) : Bytes :=
-  b!"HTTP/1.1 " ++ decDigits code ++ (let r := reason code; if r.isEmpty then [] else 32 :: r) ++ crlf
+  b!"HTTP/1.1 " ++ decDigits code ++ (32 :: reason code) ++ crlf
 
 def cleanName (n : Bytes) : Bytes := n.filter isTChar
 def cleanValue (v : Bytes) : Bytes := v.filter fieldByteOk

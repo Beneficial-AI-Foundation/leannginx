@@ -311,14 +311,14 @@ def parseReturn (args : List Bytes) : Except String (Nat × Option Bytes) :=
 
 /-- Tuning knobs of nginx's process model and buffers: accepted silently, no effect. -/
 def silentDirectives : List Bytes :=
-  [b!"worker_connections", b!"user", b!"pid", b!"sendfile", b!"tcp_nopush",
+  [b!"worker_connections", b!"pid", b!"sendfile", b!"tcp_nopush",
    b!"tcp_nodelay", b!"types_hash_max_size", b!"types_hash_bucket_size",
    b!"server_names_hash_bucket_size", b!"server_names_hash_max_size", b!"multi_accept",
    b!"use", b!"worker_rlimit_nofile", b!"client_body_buffer_size", b!"keepalive_requests",
    b!"reset_timedout_connection", b!"open_file_cache", b!"client_header_timeout",
    b!"client_body_timeout", b!"send_timeout", b!"proxy_http_version", b!"proxy_buffering",
    b!"proxy_read_timeout", b!"proxy_connect_timeout", b!"proxy_send_timeout",
-   b!"server_name_in_redirect", b!"port_in_redirect", b!"absolute_redirect",
+   b!"port_in_redirect",
    b!"ssl_protocols", b!"ssl_ciphers", b!"ssl_prefer_server_ciphers", b!"ssl_session_cache",
    b!"ssl_session_timeout", b!"ssl_session_tickets", b!"ssl_stapling", b!"ssl_stapling_verify",
    b!"ssl_trusted_certificate", b!"ssl_dhparam", b!"ssl_ecdh_curve", b!"ssl_buffer_size",
@@ -327,7 +327,7 @@ def silentDirectives : List Bytes :=
 /-- Accepted for compatibility but with no effect that a client could notice: warned about. -/
 def ignoredDirectives : List Bytes :=
   [b!"log_format", b!"gzip_proxied", b!"gzip_http_version", b!"gzip_buffers",
-   b!"gzip_disable", b!"gzip_static", b!"charset", b!"proxy_set_header", b!"proxy_redirect", b!"etag",
+   b!"gzip_disable", b!"gzip_static", b!"charset", b!"proxy_redirect", b!"etag",
    b!"if_modified_since", b!"expires"]
 
 abbrev Elab := StateT (List String) (Except String)
@@ -355,6 +355,8 @@ def elabSetting (s : Settings) (d : Directive) : Elab (Option Settings) := do
   if n == b!"add_header" then
     needArgs d 2 3; noBlock d
     match d.args with
+    | [_, _, flag] =>
+      throw s!"the \"{toStr flag}\" parameter of \"add_header\" is not supported: leannginx applies add_header only to 2xx/3xx responses, so headers would be silently missing on error responses. Use the two-argument form."
     | k :: v :: _ =>
       unless isToken k && validValue v do throw "invalid header in \"add_header\" directive"
       return some { s with addHeaders := some (s.addHeaders.getD [] ++ [(k, v)]) }
@@ -406,7 +408,22 @@ def elabSetting (s : Settings) (d : Directive) : Elab (Option Settings) := do
     | none => throw "\"client_max_body_size\" directive invalid value"
   return none
 
+/-- Unsupported directives whose *silent* acceptance would turn off a protection the operator
+asked for. These fail `nginx -t` with an explanation, so the operator is never left trusting a
+defence that is not in effect (a stock nginx honours each of these). -/
+def securityRejected : List (Bytes × String) :=
+  [(b!"proxy_set_header",
+      "leannginx does not rewrite upstream request headers, so a rule meant to sanitize a client-controlled header (e.g. clearing X-Forwarded-For or Authorization before the backend sees it) would do nothing. Remove it, or do not proxy with leannginx."),
+   (b!"user",
+      "leannginx does not drop privileges, so running it as root to bind ports 80/443 would stay root. Run it as a non-root user instead."),
+   (b!"absolute_redirect",
+      "leannginx always builds absolute redirects from the request Host, so \"absolute_redirect off\" (set to stop Host-header redirect poisoning) would have no effect."),
+   (b!"server_name_in_redirect",
+      "leannginx redirects always use the request Host; this directive would have no effect.")]
+
 def elabIgnored (d : Directive) : Elab Bool := do
+  if let some reason := securityRejected.lookup d.name then
+    throw s!"directive \"{toStr d.name}\" is not supported and silently accepting it would disable a protection: {reason}"
   if silentDirectives.contains d.name then return true
   if ignoredDirectives.contains d.name then
     warn s!"directive \"{toStr d.name}\" is accepted but has no effect in leannginx"
@@ -447,7 +464,10 @@ def elabLocation (d : Directive) : Elab Location := do
     else if n == b!"try_files" then
       needArgs c 2 64; noBlock c; l := { l with tryFiles := some c.args }
     else if n == b!"proxy_pass" then
-      needArgs c 1 1; noBlock c; let u ← liftM (parseUpstream c.args.head!); l := { l with proxy := some u }
+      needArgs c 1 1; noBlock c; let u ← liftM (parseUpstream c.args.head!)
+      if isRegex && u.uri.isSome then
+        throw "\"proxy_pass\" cannot have a URI part in a location given by a regular expression"
+      l := { l with proxy := some u }
     else if n == b!"location" then throw "nested locations are not supported by leannginx"
     else unknown c "location"
   if isRegex && l.alias.isSome then

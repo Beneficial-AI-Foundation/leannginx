@@ -235,6 +235,13 @@ def authChallenge (eff : Settings) : List (Bytes × Bytes) :=
     [(b!"WWW-Authenticate", b!"Basic realm=\"" ++ realm.filter (fun c => c != 34 && fieldByteOk c) ++ b!"\"")]
   | _ => []
 
+/-- Extra response headers an error carries beyond the base/`add_header` set: a
+`WWW-Authenticate` challenge on 401 (RFC 7617), and `Allow: GET, HEAD` on 405, which RFC 9110
+§15.5.6 requires every 405 to carry. -/
+def errorExtraHeaders (eff : Settings) (code : Nat) : List (Bytes × Bytes) :=
+  (if code == 401 then authChallenge eff else []) ++
+  (if code == 405 then [(b!"Allow", b!"GET, HEAD")] else [])
+
 /-- `route`, behind `auth_basic`: 401 when credentials are required and missing or wrong. -/
 def routeAuth (h : HttpConf) (sv : Server) (req : Request) (v : Vars) (np : NPath)
     (users : Bytes → List (Bytes × Bytes)) (authz : Option Bytes) : Step :=

@@ -125,9 +125,10 @@ Routing needs to know which files exist, but the router is pure: `route` returns
 program (`Step`) that asks `stat` questions. `Main.lean` answers them with real `stat` calls;
 the specs quantify over *all* possible answers, so they hold whatever is on disk.
 
-Networking uses Lean's built-in `Std.Async` (libuv). leannginx and LeanTLS contain no
-hand-written C. lean-zip ships four small C primitives (fast byte copies), each with a pure-Lean
-reference and a proof that they agree.
+Networking uses Lean's built-in `Std.Async` (libuv). The only hand-written C in leannginx is
+`c/reuseport.c` (~114 lines: an SO_REUSEPORT bind and a socket-abort for the send timeout, until
+`Std.Async` offers them); LeanTLS has none. lean-zip ships four small C primitives (fast byte
+copies), each with a pure-Lean reference and a proof that they agree.
 
 The Lean version is 4.35.0 because that is what lean-zip's pinned commit builds with. When you
 update dependencies, use `lake update --keep-toolchain`, or Lake will move to LeanTLS's newer
@@ -171,7 +172,9 @@ except `gzip_roundtrip`, which is lean-zip's theorem and also trusts the compile
   (`routeAuth_file_authorized`). A `try_files` entry built from client input
   (`try_files /q/$args.html` with `GET /?../admin/page`) therefore cannot serve a protected
   location's file: a hit that belongs to another location becomes an internal redirect, and that
-  location's rules decide (nginx serves it, past `/admin/`'s `auth_basic`).
+  location's rules decide **what is served** (nginx serves it outright, past `/admin/`'s
+  `auth_basic`). The proof covers the file served, not whether the protected file's *existence*
+  leaks through this path — it can, as a 1-bit oracle.
 - *Request framing:* the head ends at the first empty line of the buffer, the body starts right
   after it and inside the buffer (`findHeadEnd_first`).
 - *Hosts and credentials:* the host a request is routed by contains host characters only

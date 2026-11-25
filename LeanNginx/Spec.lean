@@ -6,7 +6,7 @@ import LeanNginx.Proofs.Serve
 /-!
 # leannginx specification
 
-This file is the test suite. Every behaviour we rely on is a theorem here, checked by
+This file is the test suite for the pure core. Most behaviour we rely on there is a theorem here, checked by
 `lake build`; there are no runtime unit tests. Section headers name the nginx feature and,
 where there is one, the script in nginx's own Perl test suite (nginx-tests) that covers it.
 
@@ -119,6 +119,14 @@ theorem vector_versions : parseRequest b!"GET / HTTP/2.0\r\nHost: a" = .error 50
 /-- `Host: ../x` and duplicate `Host` fields are refused. -/
 theorem vector_bad_host : parseRequest b!"GET / HTTP/1.1\r\nHost: ../x" = .error 400 ∧
     parseRequest b!"GET / HTTP/1.1\r\nHost: a\r\nHost: b" = .error 400 := by decide +kernel
+
+/-- **HTTP/1.1 requires a `Host` field**, even in absolute form (RFC 9112 §3.2). An HTTP/1.1
+request with no `Host` header is 400 whether or not an absolute-form target carries a host. -/
+theorem vector_host_required :
+    (parseRequest b!"GET http://a/ HTTP/1.1").toOption = none ∧
+    (parseRequest b!"GET / HTTP/1.1").toOption = none ∧
+    (parseRequest b!"GET http://a/ HTTP/1.0").toOption.isSome = true := by
+  decide +kernel
 
 /-- Absolute-form targets: the host comes from the target. -/
 theorem vector_absolute_form :
@@ -830,8 +838,10 @@ theorem basicCreds_user_no_colon (v u p : Bytes) (h : basicCreds v = some (u, p)
     · cases h
   · cases h
 
-/-- An HTTP/1.0 request without `Connection: keep-alive` closes the connection; an HTTP/1.1 one
-with `Connection: close` does too (RFC 9112 §9.3). -/
+/-- Two cases of RFC 9112 §9.3 (the code also closes for other `Connection` values, e.g. an
+HTTP/1.0 `Connection: foo` or an HTTP/1.1 `keep-alive, close`; those are not characterised here):
+an HTTP/1.0 request with no `Connection` field closes, and an HTTP/1.1 one whose `Connection`
+value is exactly `close` closes. -/
 theorem keepAlive_cases (r : Request) :
     (r.minor = 0 → (headerVals r.headers b!"connection").isEmpty → r.keepAlive = false) ∧
     (r.minor = 1 → b!"close" ∈ (headerVals r.headers b!"connection").map lowerB → r.keepAlive = false) := by
@@ -916,7 +926,7 @@ theorem vector_etag : etag 612 1700000000 = b!"\"6553f100-264\"" := by decide +k
 
 /-- Status lines. -/
 theorem vector_status : statusLine 404 = b!"HTTP/1.1 404 Not Found\r\n" ∧
-    statusLine 299 = b!"HTTP/1.1 299\r\n" := by decide +kernel
+    statusLine 299 = b!"HTTP/1.1 299 \r\n" := by decide +kernel
 
 /-! ## 5b. gzip (nginx-tests: `gzip.t`) -/
 
@@ -1165,7 +1175,9 @@ request, and that location's access check passed for the credentials sent.
 So no entry of `try_files`, whatever variables it is built from (`try_files /q/$args.html` with
 `GET /?../admin/page`), can serve a file of a path that belongs to another location (say a
 protected `/admin/`) without that location's check: such a hit becomes an internal redirect, and
-the IO shell routes every hop through `routeAuth` again. -/
+the IO shell routes every hop through `routeAuth` again. This is about the file *served*; it does
+not state non-interference, so whether the protected file's existence leaks (it does, as a 1-bit
+oracle) is a separate, unproven question. -/
 theorem routeAuth_file_authorized (h : HttpConf) (sv : Server) (req : Request) (v : Vars)
     (np : NPath) (users : Bytes → List (Bytes × Bytes)) (authz : Option Bytes)
     (o : Bytes → Option Kind) (p : Bytes) (size : Nat) (mtime : Int)
@@ -1204,8 +1216,8 @@ theorem routeAuth_file_authorized (h : HttpConf) (sv : Server) (req : Request) (
 
 /-- The cross-location case on a concrete server (`location = /` with `try_files /q/$args.html`,
 a protected `/admin/`): `GET /?../admin/page` with the file present is an internal redirect to
-`/admin/page.html`, not the file; the next hop answers 401. A path that belongs to the same
-location is still served directly. -/
+`/admin/page.html`, not the file; the next hop answers 401. (A plain `GET /?x` likewise becomes
+an internal redirect to `/q/x.html`, since that path selects `location /`, not `location = /`.) -/
 def tArgsServer : Server :=
   { s := { root := some b!"/srv/www" },
     locations := [{ kind := .exact, uri := b!"/", tryFiles := some [b!"/q/$args.html", b!"/index.html"] },
@@ -1343,6 +1355,32 @@ theorem vector_vhost_confusion :
     nameMatches b!"*.example.com" b!"a.example.com.evil.com" = false ∧
     nameMatches b!"*.example.com" b!"a.example.com" = true ∧
     nameMatches b!".example.com" b!"example.com" = true := by
+  decide +kernel
+
+/-! ## 12. RFC MUSTs the IO shell relies on -/
+
+/-- **No `100 Continue` to an HTTP/1.0 client** (RFC 9110 §10.1.1 / RFC 9112 §9.3). The pure
+predicate the shell uses to decide whether to send an interim 100 is true only for HTTP/1.1. -/
+theorem wants100_only_http11 (r : Request) (h : r.wants100Continue = true) : r.minor = 1 := by
+  unfold Request.wants100Continue at h
+  simp only [Bool.and_eq_true, beq_iff_eq] at h
+  exact h.1
+
+/-- **Every 405 carries `Allow`** (RFC 9110 §15.5.6): the shell adds `errorExtraHeaders` to each
+error response, and for 405 that list contains `Allow: GET, HEAD` (the methods a static location
+serves), whatever the configuration. -/
+theorem errorExtraHeaders_405 (eff : Settings) :
+    (b!"Allow", b!"GET, HEAD") ∈ errorExtraHeaders eff 405 := by
+  simp [errorExtraHeaders]
+
+def tReq100 (minor : Nat) : Request :=
+  { method := b!"POST", target := b!"/", path := b!"/", query := none, minor,
+    headers := [(b!"expect", b!"100-continue")], host := some b!"x", contentLength := 3 }
+
+theorem vector_rfc_musts :
+    (tReq100 0).wants100Continue = false ∧
+    (tReq100 1).wants100Continue = true ∧
+    errorExtraHeaders {} 405 = [(b!"Allow", b!"GET, HEAD")] := by
   decide +kernel
 
 end LeanNginx.Spec

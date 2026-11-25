@@ -226,7 +226,7 @@ that does not normalise is a 500.
 
 `own np` says whether the path `np` belongs to this location (selects it). A file or directory
 found for an entry that belongs to another location is not served here: routing continues with an
-internal redirect to it, so that location's rules, `auth_basic` among them, decide. nginx would
+internal redirect to it, so that location's rules, `auth_basic` among them, decide what is served. nginx would
 serve it under the current location; with an entry built from client input
 (`try_files /q/$args.html`, `GET /?../admin/x`) that serves another location's files without its
 access check. Here a file is only ever served for a path of the location whose access check passed

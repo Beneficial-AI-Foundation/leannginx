@@ -12,7 +12,8 @@ pure, specified code in `LeanNginx/`: request parsing (`parseRequest`), path nor
 (`fileResponse`, `renderHead`, `errorPage`, `autoindexPage`). Not covered by specs: this file.
 
 Networking uses Lean's built-in `Std.Async` (libuv); TLS 1.3 comes from LeanTLS
-(`LeanTLS.Server`). There is no hand-written C.
+(`LeanTLS.Server`). The only hand-written C is `c/reuseport.c` (a small SO_REUSEPORT and
+socket-abort shim); everything else is Lean or compiler-generated.
 -/
 open Std.Async Std.Net LeanNginx
 
@@ -466,9 +467,10 @@ def connectUpstream (up : Upstream) : Async TCP.Socket.Client := do
 def parseUpstreamHead (head : Bytes) : Option (Nat × List (Bytes × Bytes)) := do
   let line :: rest := headLines head | none
   let code ← parseNat? ((splitOnByte 32 line).getD 1 [])
+  if code < 100 || code > 599 then none   -- RFC 9112 §4: the status is three digits, 100..599
   let hs := rest.filterMap fun l =>
     match splitFirst 58 l with
-    | (n, some v) => some (n, trimWS v)
+    | (n, some v) => if isToken n then some (n, trimWS v) else none  -- drop empty/invalid field names
     | _ => none
   pure (code, hs)
 
@@ -502,7 +504,7 @@ def proxyRequest (env : Env) (c : Link) (req : Request) (body : ByteArray)
         let now ← nowSecs
         let hs := hs.filter fun (n, _) => !hiddenUpstream.contains (lowerB n)
         sendB c (renderHead code ((← baseHeadersIO env) ++ hs ++ [connHeader false]))
-        let n ← if head then pure 0 else do
+        let n ← if head || code == 204 || code == 304 then pure 0 else do
           if rest.size > 0 then c.send rest
           relay us c rest.size
         closeConn us
@@ -582,7 +584,7 @@ def handle (env : Env) (port : Nat) (peer : String) (c : Link) (req : Request)
         | none => return ← sendErrorPage env c head keep code
       | some orig, _ => return ← sendErrorPage env c head keep orig
       | none, none =>
-        let extra := (if code == 401 then authChallenge eff else []) ++ (if code == 405 then [] else addH code)
+        let extra := errorExtraHeaders eff code ++ (if code == 405 then [] else addH code)
         return ← sendErrorPage env c head keep code extra
     | .file path size mtime =>
       let mime := mimeFor env.http.types (eff.defaultType.getD b!"text/plain") path
@@ -661,8 +663,7 @@ partial def connLoop (env : Env) (port : Nat) (peer : String) (c : Link)
         accessLog env peer reqLine (some req) o
         closeConn c
         return
-      if req.contentLength > 0 && rest.size < req.contentLength &&
-          (header? req.headers b!"expect").map lowerB == some b!"100-continue" then
+      if req.contentLength > 0 && rest.size < req.contentLength && req.wants100Continue then
         sendB c (b!"HTTP/1.1 100 Continue" ++ crlf ++ crlf)
       match ← readBody c rest req.contentLength 60000 with
       | none => closeConn c
