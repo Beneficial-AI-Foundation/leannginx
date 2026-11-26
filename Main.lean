@@ -544,6 +544,28 @@ def accessLog (env : Env) (peer : String) (reqLine : Bytes) (req? : Option Reque
     h.putStr line
     h.flush
 
+/-- The location's served root (`alias`, else `root`), as `baseOf` computes it for the spec. -/
+def servedRoot (l : Location) (eff : Settings) : Bytes :=
+  dropTrailingSlash (l.alias.getD (eff.root.getD defaultRoot))
+
+/-- `disable_symlinks` guard. `route_confined` proves the *lexical* served path stays under the
+root; it says nothing about symbolic links. This resolves the path (and the root) with
+`realpath(3)` — following every symlink and `..` — and refuses a file whose real location escapes
+the real root. It defends against a symlink an untrusted party placed inside the served directory
+(shared hosting, an unpacked upload or archive, a cloned git repository — git stores symlinks)
+that points outside it. Fails closed (unreadable path ⇒ refused). There is a `realpath`→open race,
+as in nginx's `disable_symlinks on` without `openat`; the property is resolved-path confinement, not
+TOCTOU-freedom. -/
+def resolvedUnderRoot (base path : Bytes) : IO Bool := do
+  match toStrStrict? base, toStrStrict? path with
+  | some b, some p =>
+    try
+      let rb := (← IO.FS.realPath b).toString
+      let rp := (← IO.FS.realPath p).toString
+      return rp == rb || rp.startsWith (rb ++ "/")
+    catch _ => return false
+  | _, _ => return false
+
 /-- Serve one parsed request. Internal redirects (index, `try_files`, `error_page`) loop here,
 at most 10 times, like nginx. -/
 def handle (env : Env) (port : Nat) (peer : String) (c : Link) (req : Request)
@@ -589,6 +611,9 @@ def handle (env : Env) (port : Nat) (peer : String) (c : Link) (req : Request)
     | .file path size mtime =>
       let mime := mimeFor env.http.types (eff.defaultType.getD b!"text/plain") path
       let some pathS := toStrStrict? path | return ← sendErrorPage env c head keep 404
+      -- disable_symlinks (default on): refuse a file whose resolved path escapes the resolved root
+      if eff.disableSymlinks.getD true && !(← resolvedUnderRoot (servedRoot l eff) path) then
+        return ← sendErrorPage env c head keep 404
       let fr : FileResp := match errCode with
         | some code => { status := code, body := some (0, size),
                          headers := [(b!"Content-Type", mime), (b!"Content-Length", decDigits size)] }
@@ -618,6 +643,8 @@ def handle (env : Env) (port : Nat) (peer : String) (c : Link) (req : Request)
         return { status := fr.status, sent := n, keep := keep && n == len }
       | _, _ => sendB c hdr; return { status := fr.status, sent := 0, keep }
     | .autoindex dir =>
+      if eff.disableSymlinks.getD true && !(← resolvedUnderRoot (servedRoot l eff) dir) then
+        return ← sendErrorPage env c head keep 404
       let es ← listDir dir
       return ← sendSimple env c head keep 200 b!"text/html" (autoindexPage np.uri es) (addH 200)
     | .redirect code loc =>

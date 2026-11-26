@@ -21,6 +21,7 @@ echo "smoke:$(openssl passwd -5 hunter2)" > "$TMP/users"
 mkdir -p "$TMP/site/q" "$TMP/site/secret" "$TMP/ls"
 echo "games" > "$TMP/site/q/games.html"; echo "secret page" > "$TMP/site/secret/s.html"
 touch "$TMP/ls/javascript:alert(1)"
+ln -s /etc/hostname "$TMP/ls/escape"        # a symlink inside the served dir pointing outside it
 python3 -m http.server $UP --bind 127.0.0.1 --directory "$TMP/up" >/dev/null 2>&1 & UPS=$!
 cat > "$TMP/t.conf" <<CONF
 http {
@@ -142,6 +143,10 @@ check "try_files oracle: absent"   401 "$(code --path-as-is "$B/cat?../secret/no
 check "try_files bypass, creds"  "secret page" "$(curl -s -u smoke:hunter2 --path-as-is "$B/cat?../secret/s")"
 check "names are case-exact"     404 "$(code "$B/SECRET/s.html")"
 check "autoindex link encoded"   1 "$(curl -s $B/ls/ | grep -c 'href="javascript%3Aalert(1)"')"
+# disable_symlinks (default on): a symlink inside the served dir that resolves outside it is refused
+# (404, not the file), so untrusted content (shared hosting, unpacked uploads, a cloned git repo)
+# can't escape the root. The 404 body is the error page; the point is the symlink target is not served.
+check "symlink escape blocked" 404 "$(code $B/ls/escape)"
 check "proxy refuses ..;"         400 "$(code --path-as-is "$B/api/..;/x")"
 check "proxy sends routed path"  "from upstream" "$(curl -s --path-as-is "$B/files/..%2Fapi/u.txt")"
 # RFC MUST + fail-loud fixes
