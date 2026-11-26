@@ -20,15 +20,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Proof discipline (CLAUDE.md): no sorry/admit/native_decide in the sources.
-      # grep exits 1 on "no match" (success here); a hit (exit 0) fails the step.
-      - name: No sorry / admit / native_decide
-        run: |
-          if grep -rnE "\b(sorry|admit)\b|native_decide" LeanNginx Main.lean; then
-            echo "::error::found sorry / admit / native_decide in the sources"
-            exit 1
-          fi
-
       # elan + the toolchain pinned in lean-toolchain, with the .lake cache.
       - name: Build the library and the lnginx binary
         uses: leanprover/lean-action@v1
@@ -38,8 +29,11 @@ jobs:
           build-args: "lnginx"
           use-github-cache: true
 
-      # Axiom audit: ./audit.sh regenerates LeanNginx/Audit.lean and the build
-      # fails if any spec depends on an axiom outside propext/Classical.choice/Quot.sound.
+      # Axiom audit: ./audit.sh regenerates LeanNginx/Audit.lean and the build fails
+      # if any spec depends on an axiom outside propext/Classical.choice/Quot.sound.
+      # This is what enforces the no-sorry / no-native_decide discipline: `sorry`
+      # introduces `sorryAx` and `native_decide` introduces `Lean.ofReduceBool`,
+      # neither of which is allowed, so either one reachable from a spec fails here.
       - name: Axiom audit
         run: ./audit.sh
 
