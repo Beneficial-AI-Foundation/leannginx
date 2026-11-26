@@ -135,6 +135,10 @@ structure Settings where
   root : Option Bytes := none
   index : Option (List Bytes) := none
   autoindex : Option Bool := none
+  /-- `disable_symlinks on|off`. When on (the default here, unlike nginx), a served path whose
+  resolved location (after following symlinks and `..`) escapes its `root`/`alias` is refused.
+  `route_confined` only bounds the *lexical* path; this additionally guards the resolved one. -/
+  disableSymlinks : Option Bool := none
   addHeaders : Option (List (Bytes × Bytes)) := none
   errorPages : Option (List (Nat × Bytes)) := none
   defaultType : Option Bytes := none
@@ -157,6 +161,7 @@ def Settings.merge (child parent : Settings) : Settings where
   root := child.root <|> parent.root
   index := child.index <|> parent.index
   autoindex := child.autoindex <|> parent.autoindex
+  disableSymlinks := child.disableSymlinks <|> parent.disableSymlinks
   addHeaders := child.addHeaders <|> parent.addHeaders
   errorPages := child.errorPages <|> parent.errorPages
   defaultType := child.defaultType <|> parent.defaultType
@@ -352,6 +357,8 @@ def elabSetting (s : Settings) (d : Directive) : Elab (Option Settings) := do
     needArgs d 1 64; noBlock d; return some { s with index := some d.args }
   if n == b!"autoindex" then
     noBlock d; let v ← liftM (onOff n d.args); return some { s with autoindex := some v }
+  if n == b!"disable_symlinks" then
+    noBlock d; let v ← liftM (onOff n d.args); return some { s with disableSymlinks := some v }
   if n == b!"add_header" then
     needArgs d 2 3; noBlock d
     match d.args with

@@ -21,6 +21,15 @@ The headline guarantee (`route_confined` in [`LeanNginx/Spec.lean`](LeanNginx/Sp
 That excludes path traversal, including nginx's well-known `alias` off-by-slash bug
 (`location /img { alias /data/img/; }` + `GET /img../secret`).
 
+The guarantee is about the path *string* — the one the server `stat`s and opens. It does not by
+itself account for **symbolic links**: a symlink an untrusted party places inside the served
+directory (shared hosting, an unpacked upload or archive, a cloned git repository — git stores
+symlinks) can have a safe lexical path yet *resolve* outside the root. `disable_symlinks` (on by
+default here, unlike nginx) closes that at the IO layer — before a file is served or listed, its
+path is resolved with `realpath(3)` and refused if it escapes the resolved root. That is a check in
+the (unproved) IO shell, not part of `route_confined`; `disable_symlinks off` follows symlinks as
+nginx does by default.
+
 > ⚠ **Research code.** It is meant for local development and demos, not as an internet-facing
 > replacement for nginx. See [Not done yet](#not-done-yet).
 
