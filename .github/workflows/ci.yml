@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: build, audit, smoke
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # elan + the toolchain pinned in lean-toolchain, with the .lake cache.
+      - name: Build the library and the lnginx binary
+        uses: leanprover/lean-action@v1
+        with:
+          auto-config: false
+          build: true
+          build-args: "lnginx"
+          use-github-cache: true
+
+      # Axiom audit: ./audit.sh regenerates LeanNginx/Audit.lean and the build fails
+      # if any spec depends on an axiom outside propext/Classical.choice/Quot.sound.
+      # This is what enforces the no-sorry / no-native_decide discipline: `sorry`
+      # introduces `sorryAx` and `native_decide` introduces `Lean.ofReduceBool`,
+      # neither of which is allowed, so either one reachable from a spec fails here.
+      - name: Axiom audit
+        run: ./audit.sh
+
+      # End-to-end smoke test of the built binary against the sample site.
+      - name: Smoke test
+        run: sh scripts/smoke.sh
